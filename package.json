@@ -1,0 +1,56 @@
+{
+  "name": "datalens-mcp-server",
+  "version": "0.1.1",
+  "private": false,
+  "type": "module",
+  "bin": {
+    "datalens-mcp-server": "dist/cli.js",
+    "datalens-mcp-daemon": "dist/daemon-cli.js",
+    "datalens-mcp-proxy": "dist/proxy-cli.js",
+    "datalens-mcp-call": "dist/call-cli.js"
+  },
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "SKILL.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts src/cli.ts src/daemon-cli.ts src/proxy-cli.ts src/call-cli.ts --format esm,cjs --dts",
+    "dev": "tsx src/index.ts",
+    "dev:daemon": "tsx src/daemon-cli.ts",
+    "dev:proxy": "tsx src/proxy-cli.ts",
+    "lint": "eslint \"src/**/*.ts\" --max-warnings=0",
+    "start": "node dist/index.js",
+    "start:cli": "node dist/cli.js",
+    "start:daemon": "node dist/daemon-cli.js",
+    "start:proxy": "node dist/proxy-cli.js",
+    "test": "vitest run",
+    "prepublishOnly": "pnpm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.22.3",
+    "nanoid": "^5.1.6",
+    "ws": "^8.18.3",
+    "yaml": "^2.8.1",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.5"
+  },
+  "author": "DataLens Team <support@datalens.uk>"
+}
