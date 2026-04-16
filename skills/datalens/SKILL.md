@@ -173,31 +173,35 @@ Tab management is usually not needed — `scrape_detect_tables` with a `url` arg
 
 ```bash
 # 1. Detect tables on the homepage
-node scripts/datalens.mjs scrape_detect_tables '{"url":"https://www.toutiao.com/?is_new_connect=0&is_new_user=0","prompt":"article list"}'
+datalens-mcp-call scrape_detect_tables '{"url":"https://www.toutiao.com/?is_new_connect=0&is_new_user=0","prompt":"article list"}'
 
 # 2. Analyze columns (fill in selectors from step 1 output)
-node scripts/datalens.mjs scrape_analyze_columns '{"rootSelector":"<from step 1>","itemSelector":"<from step 1>","documentInfoPath":"<from step 1>","url":"https://www.toutiao.com/?is_new_connect=0&is_new_user=0","prompt":"article list"}'
+datalens-mcp-call scrape_analyze_columns '{"rootSelector":"<from step 1>","itemSelector":"<from step 1>","documentInfoPath":"<from step 1>","url":"https://www.toutiao.com/?is_new_connect=0&is_new_user=0","prompt":"article list"}'
 
 # 3. Preview run — first 10 rows (paste the full jobDraft JSON object from step 2)
-node scripts/datalens.mjs scrape_start '{"jobDraft":<paste jobDraft>,"maxRecords":10}'
+datalens-mcp-call scrape_start '{"jobDraft":<paste jobDraft>,"maxRecords":10}'
 
 # 4. Poll until status is COMPLETED
-node scripts/datalens.mjs scrape_status '{"jobId":"<jobId>","waitMs":3000}'
+datalens-mcp-call scrape_status '{"jobId":"<jobId>","waitMs":3000}'
 
 # 5. Save results to file
-node scripts/datalens.mjs scrape_export_to_file '{"jobId":"<jobId>","outputDir":"/tmp/datalens","format":"json"}'
+datalens-mcp-call scrape_export_to_file '{"jobId":"<jobId>","outputDir":"/tmp/datalens","format":"json"}'
 ```
 
 Set `DATALENS_TIMEOUT=180000` before running if a tool call takes longer than the default 120 s:
 
 ```bash
-DATALENS_TIMEOUT=180000 node scripts/datalens.mjs scrape_analyze_columns '...'
+DATALENS_TIMEOUT=180000 datalens-mcp-call scrape_analyze_columns '...'
 ```
+
+---
+
+## Debug Tools
 
 These are for troubleshooting only. Do not use in normal scraping workflows.
 
 ```
-debug_get_logs(levels?, sources?, jobId?, requestId?, limit?)
-debug_clear_logs(levels?, sources?, jobId?)
-debug_export_logs_to_file(outputDir, levels?, sources?, jobId?)
+datalens-mcp-call debug_get_logs '{"levels":["error"]}'
+datalens-mcp-call debug_clear_logs '{}'
+datalens-mcp-call debug_export_logs_to_file '{"outputDir":"/tmp/datalens"}'
 ```
