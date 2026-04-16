@@ -35,9 +35,9 @@ Create or edit `~/.cursor/mcp.json` (Cursor) or `~/.codeium/windsurf/mcp_config.
   "mcpServers": {
     "datalens-mcp": {
       "command": "npx",
-      "args": ["-y", "--package", "datalens-mcp-server", "datalens-mcp-proxy"]
-    }
-  }
+      "args": ["-y", "--package", "datalens-mcp-server", "datalens-mcp-proxy"],
+    },
+  },
 }
 ```
 
@@ -50,9 +50,9 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
   "mcpServers": {
     "datalens-mcp": {
       "command": "npx",
-      "args": ["-y", "--package", "datalens-mcp-server", "datalens-mcp-proxy"]
-    }
-  }
+      "args": ["-y", "--package", "datalens-mcp-server", "datalens-mcp-proxy"],
+    },
+  },
 }
 ```
 
@@ -66,10 +66,10 @@ Add to your VS Code `settings.json` (user or workspace):
     "servers": {
       "datalens-mcp": {
         "command": "npx",
-        "args": ["-y", "--package", "datalens-mcp-server", "datalens-mcp-proxy"]
-      }
-    }
-  }
+        "args": ["-y", "--package", "datalens-mcp-server", "datalens-mcp-proxy"],
+      },
+    },
+  },
 }
 ```
 
@@ -80,9 +80,9 @@ Or create a `.vscode/mcp.json` file in your project root:
   "servers": {
     "datalens-mcp": {
       "command": "npx",
-      "args": ["-y", "--package", "datalens-mcp-server", "datalens-mcp-proxy"]
-    }
-  }
+      "args": ["-y", "--package", "datalens-mcp-server", "datalens-mcp-proxy"],
+    },
+  },
 }
 ```
 
@@ -95,9 +95,9 @@ Edit `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-d
   "mcpServers": {
     "datalens-mcp": {
       "command": "npx",
-      "args": ["-y", "--package", "datalens-mcp-server", "datalens-mcp-proxy"]
-    }
-  }
+      "args": ["-y", "--package", "datalens-mcp-server", "datalens-mcp-proxy"],
+    },
+  },
 }
 ```
 
@@ -153,27 +153,27 @@ Expected outcomes:
 
 ## Tools
 
-| Tool                            | Description                                             |
-| ------------------------------- | ------------------------------------------------------- |
-| `browser_open_tab`              | Open a browser tab and make it active                   |
-| `browser_list_tabs`             | List all available browser tabs                         |
-| `browser_use_tab`               | Select and activate a browser tab                       |
-| `browser_close_tab`             | Close a browser tab                                     |
-| `debug_get_logs`                | Query structured extension debug logs                   |
-| `debug_clear_logs`              | Clear all or filtered extension debug logs              |
-| `debug_export_logs_to_file`     | Export extension debug logs directly to a local file    |
-| `scrape_detect_tables`          | Detect candidate tables in the active tab               |
-| `scrape_get_table_tree`         | Fetch the UID-annotated simplified table tree           |
-| `scrape_click_expand_and_redetect` | Click expand buttons and re-detect the table        |
-| `scrape_analyze_columns`        | Analyze columns and build a scraper config draft        |
-| `scrape_start`                  | Start a scraping job from a config                      |
-| `scrape_status`                 | Get status and counters of a scraping job (supports optional `waitMs`) |
-| `scrape_pause`                  | Pause a running scraping job                            |
-| `scrape_resume`                 | Resume a paused scraping job                            |
-| `scrape_stop`                   | Stop a scraping job                                     |
-| `scrape_result`                 | Fetch paginated rows from a job result                  |
-| `scrape_export`                 | Export job results to JSON/CSV/XLSX                     |
-| `scrape_export_to_file`         | Export job results directly to a local file             |
+| Tool                               | Description                                                            |
+| ---------------------------------- | ---------------------------------------------------------------------- |
+| `browser_open_tab`                 | Open a browser tab and make it active                                  |
+| `browser_list_tabs`                | List all available browser tabs                                        |
+| `browser_use_tab`                  | Select and activate a browser tab                                      |
+| `browser_close_tab`                | Close a browser tab                                                    |
+| `debug_get_logs`                   | Query structured extension debug logs                                  |
+| `debug_clear_logs`                 | Clear all or filtered extension debug logs                             |
+| `debug_export_logs_to_file`        | Export extension debug logs directly to a local file                   |
+| `scrape_detect_tables`             | Detect candidate tables in the active tab                              |
+| `scrape_get_table_tree`            | Fetch the UID-annotated simplified table tree                          |
+| `scrape_click_expand_and_redetect` | Click expand buttons and re-detect the table                           |
+| `scrape_analyze_columns`           | Analyze columns and build a scraper config draft                       |
+| `scrape_start`                     | Start a scraping job from a config                                     |
+| `scrape_status`                    | Get status and counters of a scraping job (supports optional `waitMs`) |
+| `scrape_pause`                     | Pause a running scraping job                                           |
+| `scrape_resume`                    | Resume a paused scraping job                                           |
+| `scrape_stop`                      | Stop a scraping job                                                    |
+| `scrape_result`                    | Fetch paginated rows from a job result                                 |
+| `scrape_export`                    | Export job results to JSON/CSV/XLSX                                    |
+| `scrape_export_to_file`            | Export job results directly to a local file                            |
 
 ### Step-by-step `next_action` hints
 
