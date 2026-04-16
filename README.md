@@ -1,6 +1,6 @@
 # DataLens MCP Server
 
-Node MCP server for DataLens. The recommended runtime is a shared local daemon plus a lightweight `stdio` proxy per MCP client. The daemon owns the browser bridge, and each Codex instance talks to the daemon through its own proxy session.
+Node MCP server for DataLens. The recommended runtime is a shared local daemon plus a lightweight `stdio` proxy per MCP client. The daemon owns the browser bridge, and each AI client talks to the daemon through its own proxy session.
 
 ## Quick Start
 
@@ -8,28 +8,22 @@ Node MCP server for DataLens. The recommended runtime is a shared local daemon p
 
 ### Configure your MCP client
 
-The npm package is not published yet. For now, point your MCP client at a local checkout of this repository.
-
-Replace every `/ABSOLUTE/PATH/TO/general-scraping` below with your local repository root.
-
-Pick the config that matches your client:
+Pick the config that matches your client. All configs use `npx` to run the published npm package — no local checkout required.
 
 #### Codex
 
 Add the server with the CLI:
 
 ```bash
-codex mcp add datalens-mcp -- \
-  pnpm --dir /ABSOLUTE/PATH/TO/general-scraping exec tsx \
-  /ABSOLUTE/PATH/TO/general-scraping/packages/mcp-server/src/proxy-cli.ts
+codex mcp add datalens-mcp -- npx -y --package datalens-mcp-server datalens-mcp-proxy
 ```
 
 Or add it directly to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.datalens-mcp]
-command = "pnpm"
-args = ["--dir", "/ABSOLUTE/PATH/TO/general-scraping", "exec", "tsx", "/ABSOLUTE/PATH/TO/general-scraping/packages/mcp-server/src/proxy-cli.ts"]
+command = "npx"
+args = ["-y", "--package", "datalens-mcp-server", "datalens-mcp-proxy"]
 ```
 
 #### Cursor / Windsurf
@@ -40,15 +34,9 @@ Create or edit `~/.cursor/mcp.json` (Cursor) or `~/.codeium/windsurf/mcp_config.
 {
   "mcpServers": {
     "datalens-mcp": {
-      "command": "pnpm",
-      "args": [
-        "--dir",
-        "/ABSOLUTE/PATH/TO/general-scraping",
-        "exec",
-        "tsx",
-        "/ABSOLUTE/PATH/TO/general-scraping/packages/mcp-server/src/proxy-cli.ts"
-      ]
-    },
+      "command": "npx",
+      "args": ["-y", "--package", "datalens-mcp-server", "datalens-mcp-proxy"]
+    }
   }
 }
 ```
@@ -61,15 +49,9 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 {
   "mcpServers": {
     "datalens-mcp": {
-      "command": "pnpm",
-      "args": [
-        "--dir",
-        "/ABSOLUTE/PATH/TO/general-scraping",
-        "exec",
-        "tsx",
-        "/ABSOLUTE/PATH/TO/general-scraping/packages/mcp-server/src/proxy-cli.ts"
-      ]
-    },
+      "command": "npx",
+      "args": ["-y", "--package", "datalens-mcp-server", "datalens-mcp-proxy"]
+    }
   }
 }
 ```
@@ -83,15 +65,9 @@ Add to your VS Code `settings.json` (user or workspace):
   "mcp": {
     "servers": {
       "datalens-mcp": {
-        "command": "pnpm",
-        "args": [
-          "--dir",
-          "/ABSOLUTE/PATH/TO/general-scraping",
-          "exec",
-          "tsx",
-          "/ABSOLUTE/PATH/TO/general-scraping/packages/mcp-server/src/cli.ts"
-        ]
-      },
+        "command": "npx",
+        "args": ["-y", "--package", "datalens-mcp-server", "datalens-mcp-proxy"]
+      }
     }
   }
 }
@@ -103,15 +79,9 @@ Or create a `.vscode/mcp.json` file in your project root:
 {
   "servers": {
     "datalens-mcp": {
-      "command": "pnpm",
-      "args": [
-        "--dir",
-        "/ABSOLUTE/PATH/TO/general-scraping",
-        "exec",
-        "tsx",
-        "/ABSOLUTE/PATH/TO/general-scraping/packages/mcp-server/src/proxy-cli.ts"
-      ]
-    },
+      "command": "npx",
+      "args": ["-y", "--package", "datalens-mcp-server", "datalens-mcp-proxy"]
+    }
   }
 }
 ```
@@ -124,15 +94,9 @@ Edit `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-d
 {
   "mcpServers": {
     "datalens-mcp": {
-      "command": "pnpm",
-      "args": [
-        "--dir",
-        "/ABSOLUTE/PATH/TO/general-scraping",
-        "exec",
-        "tsx",
-        "/ABSOLUTE/PATH/TO/general-scraping/packages/mcp-server/src/proxy-cli.ts"
-      ]
-    },
+      "command": "npx",
+      "args": ["-y", "--package", "datalens-mcp-server", "datalens-mcp-proxy"]
+    }
   }
 }
 ```
