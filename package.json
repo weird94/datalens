@@ -28,7 +28,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsup src/index.ts src/cli.ts src/daemon-cli.ts src/proxy-cli.ts src/call-cli.ts --format esm,cjs --dts",
+    "build": "tsup",
     "dev": "tsx src/index.ts",
     "dev:daemon": "tsx src/daemon-cli.ts",
     "dev:proxy": "tsx src/proxy-cli.ts",
