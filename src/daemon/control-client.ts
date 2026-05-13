@@ -1,8 +1,10 @@
 import { createConnection } from 'node:net'
+import { nanoid } from 'nanoid'
 import type { JsonObject } from '../bridge/protocol'
 import type { ToolExecutionResult } from '../core/tool-registry'
 import {
   CONTROL_REQUEST_KIND_CLOSE_SESSION,
+  CONTROL_REQUEST_KIND_CANCEL_SESSION,
   CONTROL_REQUEST_KIND_HEALTH,
   CONTROL_REQUEST_KIND_INVOKE_TOOL,
   CONTROL_RESPONSE_STATUS_ERROR,
@@ -13,6 +15,14 @@ import {
 interface ControlClientOptions {
   host: string
   port: number
+}
+
+interface InvokeToolOptions {
+  invocationId?: string
+}
+
+interface CancelSessionOptions {
+  invocationId?: string
 }
 
 function toJsonLine(payload: object): string {
@@ -41,11 +51,13 @@ export class ControlClient {
   async invokeTool(
     sessionId: string,
     toolName: string,
-    args: JsonObject
+    args: JsonObject,
+    options: InvokeToolOptions = {}
   ): Promise<ToolExecutionResult> {
     const response = await this.request({
       kind: CONTROL_REQUEST_KIND_INVOKE_TOOL,
       sessionId,
+      invocationId: options.invocationId ?? nanoid(),
       toolName,
       args,
     })
@@ -72,6 +84,22 @@ export class ControlClient {
     }
 
     if (response.kind !== CONTROL_REQUEST_KIND_CLOSE_SESSION) {
+      throw new Error(`Unexpected control response kind: ${response.kind}`)
+    }
+  }
+
+  async cancelSession(sessionId: string, options: CancelSessionOptions = {}): Promise<void> {
+    const response = await this.request({
+      kind: CONTROL_REQUEST_KIND_CANCEL_SESSION,
+      sessionId,
+      ...(options.invocationId ? { invocationId: options.invocationId } : {}),
+    })
+
+    if (response.status === CONTROL_RESPONSE_STATUS_ERROR) {
+      throw new ControlError(response.error.code, response.error.message, response.error.retriable)
+    }
+
+    if (response.kind !== CONTROL_REQUEST_KIND_CANCEL_SESSION) {
       throw new Error(`Unexpected control response kind: ${response.kind}`)
     }
   }

@@ -1,11 +1,23 @@
-import { promises as fs } from 'node:fs'
-import path from 'node:path'
 import * as z from 'zod'
-import { stringify } from 'yaml'
 import type { BridgeCommandName, JsonObject } from '../bridge/protocol'
 
 const JsonObjectSchema = z.record(z.string(), z.unknown())
-const MCP_TAB_OPEN_MODE_OPTIONS = ['reuse_or_create', 'create_new'] as const
+const TAB_OPEN_MODE_OPTIONS = ['reuse_or_create', 'create_new'] as const
+const A11Y_TREE_SCOPE_OPTIONS = ['page', 'target'] as const
+const PAGE_OPERATION_OPTIONS = ['scroll', 'click', 'tap'] as const
+const SCROLL_DIRECTION_OPTIONS = ['up', 'down'] as const
+const INPUT_TEXT_MODE_OPTIONS = ['replace', 'append'] as const
+const CLICK_WAIT_MODE_OPTIONS = ['none', 'navigation', 'network_idle', 'dom_change'] as const
+const INSPECT_LEVEL_OPTIONS = ['sample', 'quality', 'stats'] as const
+const ASSET_SCOPE_OPTIONS = ['current_thread', 'workspace'] as const
+const DATA_CODE_LANGUAGE_OPTIONS = ['python'] as const
+const DATA_CODE_MODE_OPTIONS = ['preview', 'persist'] as const
+const DATA_CODE_OUTPUT_KIND_OPTIONS = ['cleaned_csv', 'merged_csv', 'analysis_output'] as const
+const TERMINAL_SCRAPE_JOB_STATES = ['COMPLETED', 'STOPPED', 'ERROR', 'CANCELED'] as const
+const START_SCRAPE_POLL_INTERVAL_MS = 2_000
+const AI_TOOL_RPC_TIMEOUT_MS = 30_000
+const AI_TOOL_LONG_RPC_TIMEOUT_MS = 120_000
+const URL_PROTOCOL_PATTERN = /^[a-z][a-z\d+\-.]*:/i
 
 export interface SendCommandOptions {
   requestId?: string
@@ -14,6 +26,7 @@ export interface SendCommandOptions {
 }
 
 export interface ToolCallContext {
+  abortSignal?: AbortSignal
   requestId: string
   selectedTabId: number | null
   sendCommand: (
@@ -27,6 +40,7 @@ export interface ToolCommand {
   commandName: BridgeCommandName
   payload: JsonObject
   requestId: string
+  timeoutMs?: number
 }
 
 export interface ToolDefinition {
@@ -63,6 +77,28 @@ type ToolRuntimeDefinition =
       ) => Promise<ToolExecutionResult> | ToolExecutionResult
     }
 
+function createTool(
+  definition: {
+    name: string
+    description: string
+    inputShape?: z.ZodRawShape
+    validateArgs?: (args: JsonObject) => void
+  } & ToolRuntimeDefinition
+): ToolDefinition {
+  const inputShape = definition.inputShape || {}
+  const schema = z.object(inputShape).strict()
+
+  return {
+    ...definition,
+    inputShape,
+    parseArgs(raw: unknown) {
+      const args = schema.parse(raw) as JsonObject
+      definition.validateArgs?.(args)
+      return args
+    },
+  }
+}
+
 export function createToolTextResult(text: string): ToolTextResult {
   return {
     kind: TOOL_EXECUTION_RESULT_KIND_TEXT,
@@ -79,25 +115,6 @@ export function isToolTextResult(result: ToolExecutionResult): result is ToolTex
     result.kind === TOOL_EXECUTION_RESULT_KIND_TEXT &&
     typeof result.text === 'string'
   )
-}
-
-function createTool(
-  definition: {
-    name: string
-    description: string
-    inputShape?: z.ZodRawShape
-  } & ToolRuntimeDefinition
-): ToolDefinition {
-  const inputShape = definition.inputShape || {}
-  const schema = z.object(inputShape)
-
-  return {
-    ...definition,
-    inputShape,
-    parseArgs(raw: unknown) {
-      return schema.parse(raw) as JsonObject
-    },
-  }
 }
 
 function readOptionalNumber(args: JsonObject, key: string): number | undefined {
@@ -138,840 +155,550 @@ function readOptionalObject(args: JsonObject, key: string): JsonObject | undefin
   return undefined
 }
 
-function resolveExportFormat(raw: string | undefined): 'json' | 'csv' | 'xlsx' {
-  if (!raw) {
-    return 'json'
+function readRequiredObject(args: JsonObject, key: string): JsonObject {
+  const value = readOptionalObject(args, key)
+  if (!value) {
+    throw new Error(`Missing required object argument: ${key}`)
   }
 
-  if (raw === 'json' || raw === 'csv' || raw === 'xlsx') {
-    return raw
-  }
-
-  throw new Error('format must be one of: json, csv, xlsx')
+  return value
 }
 
-function normalizeFileName(input: {
-  preferredFileName?: string
-  fallbackFileName?: string
-  extension: 'json' | 'csv' | 'xlsx' | 'log'
-}): string {
-  const raw = (input.preferredFileName || input.fallbackFileName || '').trim()
-  const candidate = raw.length > 0 ? raw : `scrape_result_${Date.now()}.${input.extension}`
-  const baseName = path.basename(candidate)
-  const normalized =
-    baseName === '.' || baseName === '..' ? `scrape_result_${Date.now()}` : baseName
-  return path.extname(normalized).length > 0 ? normalized : `${normalized}.${input.extension}`
+function includeOptionalString(payload: JsonObject, args: JsonObject, key: string): void {
+  const value = readOptionalString(args, key)
+  if (value !== undefined) {
+    payload[key] = value
+  }
 }
 
-function inferMimeType(format: 'json' | 'csv' | 'xlsx'): string {
-  if (format === 'json') {
-    return 'application/json'
+function includeOptionalNumber(payload: JsonObject, args: JsonObject, key: string): void {
+  const value = readOptionalNumber(args, key)
+  if (value !== undefined) {
+    payload[key] = value
   }
-  if (format === 'csv') {
-    return 'text/csv'
-  }
-  return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 }
 
-function waitForMs(ms: number): Promise<void> {
-  return new Promise(resolve => {
-    setTimeout(resolve, ms)
+function includeOptionalObject(payload: JsonObject, args: JsonObject, key: string): void {
+  const value = readOptionalObject(args, key)
+  if (value !== undefined) {
+    payload[key] = value
+  }
+}
+
+function waitForScrapePollInterval(abortSignal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (abortSignal?.aborted) {
+      reject(new Error('Scrape wait was canceled'))
+      return
+    }
+
+    const timeout = setTimeout(() => {
+      abortSignal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, START_SCRAPE_POLL_INTERVAL_MS)
+
+    const onAbort = () => {
+      clearTimeout(timeout)
+      reject(new Error('Scrape wait was canceled'))
+    }
+
+    abortSignal?.addEventListener('abort', onAbort, { once: true })
   })
 }
 
-const DEBUG_LOG_LEVEL_OPTIONS = ['debug', 'info', 'warn', 'error'] as const
-const DEBUG_LOG_SOURCE_OPTIONS = ['background', 'content', 'sidepanel'] as const
-const DEBUG_LOG_EXPORT_DEFAULT_LIMIT = 5000
-const DEBUG_LOG_EXPORT_MAX_LIMIT = 5000
-const DEBUG_LOG_EXPORT_TIMEOUT_MS = 10 * 60_000
-const DEBUG_LOG_EXPORT_DEFAULT_FILE_PREFIX = 'debug_logs'
-const DEBUG_LOG_EXPORT_FORMAT_LOG = 'log'
-const DEBUG_LOG_RESULT_EMPTY_ENTRIES_LABEL = '(no log entries)'
-const DEBUG_LOG_QUERY_SUMMARY_RETURNED_KEY = 'returned'
-const DEBUG_LOG_QUERY_SUMMARY_TOTAL_MATCHED_KEY = 'totalMatched'
-const DEBUG_LOG_QUERY_SUMMARY_HAS_MORE_KEY = 'hasMore'
-const DEBUG_LOG_QUERY_SUMMARY_TOTAL_STORED_KEY = 'totalStored'
-const DEBUG_LOG_QUERY_SUMMARY_FILTERS_KEY = 'filters'
-const DEBUG_LOG_QUERY_SUMMARY_EXPORTED_AT_KEY = 'exportedAt'
-const DEBUG_LOG_QUERY_SUMMARY_REQUEST_ID_KEY = 'requestId'
-const DEBUG_LOG_ENTRY_MESSAGE_KEY = 'message'
-const DEBUG_LOG_ENTRY_CONTEXT_KEY = 'context'
-const DEBUG_LOG_ENTRY_REQUEST_ID_KEY = 'requestId'
-const DEBUG_LOG_ENTRY_JOB_ID_KEY = 'jobId'
-const DEBUG_LOG_ENTRY_TAB_ID_KEY = 'tabId'
+function normalizeToolUrl(url: string): string {
+  const trimmed = url.trim()
+  return URL_PROTOCOL_PATTERN.test(trimmed) ? trimmed : `https://${trimmed}`
+}
 
-function buildDebugLogQueryPayload(args: JsonObject, defaultLimit?: number): JsonObject {
-  const levels = args['levels']
-  const sources = args['sources']
-  const scope = readOptionalString(args, 'scope')
-  const requestId = readOptionalString(args, 'requestId')
-  const jobId = readOptionalString(args, 'jobId')
-  const tabId = readOptionalNumber(args, 'tabId')
-  const since = readOptionalString(args, 'since')
-  const until = readOptionalString(args, 'until')
-  const searchText = readOptionalString(args, 'searchText')
-  const limit = readOptionalNumber(args, 'limit')
+function getJobFromResponse(response: JsonObject): JsonObject {
+  const job = response.job
+  if (!job || typeof job !== 'object' || Array.isArray(job)) {
+    throw new Error('Invalid startScrape response: missing job')
+  }
+
+  return job as JsonObject
+}
+
+function getJobId(job: JsonObject): string {
+  const jobId = job.jobId
+  if (typeof jobId !== 'string' || jobId.trim().length === 0) {
+    throw new Error('Invalid startScrape response: missing job.jobId')
+  }
+
+  return jobId
+}
+
+function getJobState(job: JsonObject): string {
+  const state = job.state
+  if (typeof state !== 'string' || state.trim().length === 0) {
+    throw new Error('Invalid scrape job response: missing job.state')
+  }
+
+  return state
+}
+
+function isTerminalScrapeJobState(state: string): boolean {
+  return TERMINAL_SCRAPE_JOB_STATES.includes(state as (typeof TERMINAL_SCRAPE_JOB_STATES)[number])
+}
+
+function normalizeScrapeJob(job: JsonObject): JsonObject {
+  if (job.state !== 'CANCELED') {
+    return job
+  }
+
+  const progress =
+    job.progress && typeof job.progress === 'object' && !Array.isArray(job.progress)
+      ? (job.progress as JsonObject)
+      : {}
 
   return {
-    ...(Array.isArray(levels) ? { levels } : {}),
-    ...(Array.isArray(sources) ? { sources } : {}),
-    ...(scope ? { scope } : {}),
-    ...(requestId ? { requestId } : {}),
-    ...(jobId ? { jobId } : {}),
-    ...(tabId !== undefined ? { tabId } : {}),
-    ...(since ? { since } : {}),
-    ...(until ? { until } : {}),
-    ...(searchText ? { searchText } : {}),
-    ...(limit !== undefined ? { limit } : defaultLimit !== undefined ? { limit: defaultLimit } : {}),
+    ...job,
+    progress: {
+      ...progress,
+      step: progress.step === 'state:canceled' ? 'state:stopped' : progress.step,
+    },
+    state: 'STOPPED',
   }
 }
 
-function buildDebugLogClearPayload(args: JsonObject): JsonObject {
-  const queryPayload = buildDebugLogQueryPayload(args)
-  const { limit: _limit, ...clearPayload } = queryPayload
-  return clearPayload
+function getScrapeCompletionStatus(job: JsonObject): 'completed' | 'stopped' | 'failed' {
+  if (job.state === 'COMPLETED') {
+    return 'completed'
+  }
+
+  if (job.state === 'STOPPED' || job.state === 'CANCELED') {
+    return 'stopped'
+  }
+
+  return 'failed'
 }
 
-function isJsonObjectValue(value: JsonObject[string]): value is JsonObject {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+function createStartScrapePayload(args: JsonObject, requestId: string): JsonObject {
+  const payload: JsonObject = {
+    requestId,
+  }
+
+  includeOptionalNumber(payload, args, 'tabId')
+  includeOptionalString(payload, args, 'jobId')
+  includeOptionalObject(payload, args, 'scrapeConfig')
+  includeOptionalNumber(payload, args, 'maxRecords')
+
+  return payload
 }
 
-interface DebugLogQueryResponse {
-  items: JsonObject[]
-  totalMatched: number
-  returned: number
-  hasMore: boolean
-  totalStored: number
-}
-
-function parseDebugLogQueryResponse(response: JsonObject): DebugLogQueryResponse {
-  const itemsRaw = response.items
-  const totalMatched = response.totalMatched
-  const returned = response.returned
-  const hasMore = response.hasMore
-  const totalStored = response.totalStored
-
-  if (!Array.isArray(itemsRaw) || !itemsRaw.every(item => isJsonObjectValue(item))) {
-    throw new Error('Invalid debug.get_logs response: missing items')
-  }
-
-  if (typeof totalMatched !== 'number' || !Number.isFinite(totalMatched)) {
-    throw new Error('Invalid debug.get_logs response: missing totalMatched')
-  }
-
-  if (typeof returned !== 'number' || !Number.isFinite(returned)) {
-    throw new Error('Invalid debug.get_logs response: missing returned')
-  }
-
-  if (typeof hasMore !== 'boolean') {
-    throw new Error('Invalid debug.get_logs response: missing hasMore')
-  }
-
-  if (typeof totalStored !== 'number' || !Number.isFinite(totalStored)) {
-    throw new Error('Invalid debug.get_logs response: missing totalStored')
-  }
+function createStartScrapeFinalResponse(requestId: string, job: JsonObject): JsonObject {
+  const normalizedJob = normalizeScrapeJob(job)
+  const completionStatus = getScrapeCompletionStatus(normalizedJob)
 
   return {
-    items: itemsRaw,
-    totalMatched,
-    returned,
-    hasMore,
-    totalStored,
+    requestId,
+    job: normalizedJob,
+    completionStatus,
+    ...(completionStatus === 'stopped' ? { stoppedByUser: true } : {}),
   }
 }
 
-function formatYamlBlock(value: JsonObject): string {
-  const yamlText = stringify(value).trimEnd()
-  return yamlText.length > 0 ? yamlText : DEBUG_LOG_RESULT_EMPTY_ENTRIES_LABEL
+async function stopScrapeJob(
+  jobId: string,
+  context: ToolCallContext
+): Promise<ToolExecutionResult> {
+  const stopResponse = await context.sendCommand(
+    'ai_tool.stop_scrape',
+    {
+      requestId: context.requestId,
+      jobId,
+    },
+    {
+      requestId: context.requestId,
+      jobId,
+      timeoutMs: AI_TOOL_RPC_TIMEOUT_MS,
+    }
+  )
+  const stoppedJob = getJobFromResponse(stopResponse)
+  return createStartScrapeFinalResponse(context.requestId, stoppedJob)
 }
 
-function indentBlock(text: string): string {
-  return text
-    .split('\n')
-    .map(line => `  ${line}`)
-    .join('\n')
-}
+function validateOperatePageArgs(args: JsonObject): void {
+  const operation = readRequiredString(args, 'operation')
 
-function formatScalarLine(label: string, value: JsonObject[string] | string | number | boolean): string {
-  return `${label}: ${String(value)}`
-}
-
-function filterDebugLogContext(entry: JsonObject): JsonObject {
-  const context = readOptionalObject(entry, DEBUG_LOG_ENTRY_CONTEXT_KEY)
-  if (!context) {
-    return {}
+  if (operation === 'click') {
+    if (!args.target) {
+      throw new Error('target is required for click operation')
+    }
+    return
   }
 
-  const requestId = readOptionalString(entry, DEBUG_LOG_ENTRY_REQUEST_ID_KEY)
-  const jobId = readOptionalString(entry, DEBUG_LOG_ENTRY_JOB_ID_KEY)
-  const tabId = readOptionalNumber(entry, DEBUG_LOG_ENTRY_TAB_ID_KEY)
-  const filteredContext: JsonObject = {}
-
-  Object.entries(context).forEach(([key, value]) => {
-    if (key === DEBUG_LOG_ENTRY_REQUEST_ID_KEY && value === requestId) {
-      return
+  if (operation === 'tap') {
+    if (!args.target) {
+      throw new Error('target is required for tap operation')
     }
-
-    if (key === DEBUG_LOG_ENTRY_JOB_ID_KEY && value === jobId) {
-      return
+    if (typeof args.text !== 'string') {
+      throw new Error('text is required for tap operation')
     }
+    return
+  }
+}
 
-    if (key === DEBUG_LOG_ENTRY_TAB_ID_KEY && value === tabId) {
-      return
-    }
+function validateStartScrapeArgs(args: JsonObject): void {
+  if (!readOptionalString(args, 'jobId') && !readOptionalObject(args, 'scrapeConfig')) {
+    throw new Error('jobId or scrapeConfig is required')
+  }
+}
 
-    filteredContext[key] = value
+function createRequestTool(input: {
+  name: string
+  description: string
+  commandName: BridgeCommandName
+  inputShape: z.ZodRawShape
+  payloadBuilder: (args: JsonObject, requestId: string) => JsonObject
+  timeoutMs?: number
+  validateArgs?: (args: JsonObject) => void
+}): ToolDefinition {
+  return createTool({
+    name: input.name,
+    description: input.description,
+    inputShape: input.inputShape,
+    validateArgs: input.validateArgs,
+    buildCommand: (args, context) => ({
+      commandName: input.commandName,
+      payload: input.payloadBuilder(args, context.requestId),
+      requestId: context.requestId,
+      ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
+    }),
   })
-
-  return filteredContext
 }
 
-function formatDebugLogEntry(entry: JsonObject): string {
-  const timestamp = readOptionalString(entry, 'timestamp') || 'unknown-timestamp'
-  const level = (readOptionalString(entry, 'level') || 'info').toUpperCase()
-  const source = readOptionalString(entry, 'source') || 'unknown-source'
-  const scope = readOptionalString(entry, 'scope') || 'unknown-scope'
-  const message = readOptionalString(entry, DEBUG_LOG_ENTRY_MESSAGE_KEY) || ''
-  const requestId = readOptionalString(entry, DEBUG_LOG_ENTRY_REQUEST_ID_KEY)
-  const jobId = readOptionalString(entry, DEBUG_LOG_ENTRY_JOB_ID_KEY)
-  const tabId = readOptionalNumber(entry, DEBUG_LOG_ENTRY_TAB_ID_KEY)
-  const filteredContext = filterDebugLogContext(entry)
-  const lines = [`[${timestamp}] ${level} ${source} ${scope}`]
-
-  if (message.length > 0) {
-    lines.push(formatScalarLine(DEBUG_LOG_ENTRY_MESSAGE_KEY, message))
-  }
-
-  if (requestId) {
-    lines.push(formatScalarLine(DEBUG_LOG_ENTRY_REQUEST_ID_KEY, requestId))
-  }
-
-  if (jobId) {
-    lines.push(formatScalarLine(DEBUG_LOG_ENTRY_JOB_ID_KEY, jobId))
-  }
-
-  if (tabId !== undefined) {
-    lines.push(formatScalarLine(DEBUG_LOG_ENTRY_TAB_ID_KEY, tabId))
-  }
-
-  if (Object.keys(filteredContext).length > 0) {
-    lines.push(`${DEBUG_LOG_ENTRY_CONTEXT_KEY}:`)
-    lines.push(indentBlock(formatYamlBlock(filteredContext)))
-  }
-
-  return lines.join('\n')
-}
-
-function buildDebugLogHeader(input: {
-  queryPayload: JsonObject
-  queryResult: DebugLogQueryResponse
-  requestId?: string
-  exportedAt?: string
-  format?: string
-}): string {
-  const lines = [
-    formatScalarLine(DEBUG_LOG_QUERY_SUMMARY_RETURNED_KEY, input.queryResult.returned),
-    formatScalarLine(DEBUG_LOG_QUERY_SUMMARY_TOTAL_MATCHED_KEY, input.queryResult.totalMatched),
-    formatScalarLine(DEBUG_LOG_QUERY_SUMMARY_HAS_MORE_KEY, input.queryResult.hasMore),
-    formatScalarLine(DEBUG_LOG_QUERY_SUMMARY_TOTAL_STORED_KEY, input.queryResult.totalStored),
-  ]
-
-  if (input.exportedAt) {
-    lines.push(formatScalarLine(DEBUG_LOG_QUERY_SUMMARY_EXPORTED_AT_KEY, input.exportedAt))
-  }
-
-  if (input.format) {
-    lines.push(formatScalarLine('format', input.format))
-  }
-
-  if (input.requestId) {
-    lines.push(formatScalarLine(DEBUG_LOG_QUERY_SUMMARY_REQUEST_ID_KEY, input.requestId))
-  }
-
-  if (Object.keys(input.queryPayload).length > 0) {
-    lines.push(`${DEBUG_LOG_QUERY_SUMMARY_FILTERS_KEY}:`)
-    lines.push(indentBlock(formatYamlBlock(input.queryPayload)))
-  }
-
-  return lines.join('\n')
-}
-
-function buildDebugLogText(input: {
-  queryPayload: JsonObject
-  queryResult: DebugLogQueryResponse
-  requestId?: string
-  exportedAt?: string
-  format?: string
-}): string {
-  const header = buildDebugLogHeader(input)
-  const entries =
-    input.queryResult.items.length > 0
-      ? input.queryResult.items.map(item => formatDebugLogEntry(item)).join('\n\n')
-      : DEBUG_LOG_RESULT_EMPTY_ENTRIES_LABEL
-
-  return `${header}\n\n${entries}`
-}
-
-function buildDebugLogExportResultText(input: {
-  requestId: string
-  outputDir: string
-  fileName: string
-  filePath: string
-  bytes: number
-  queryResult: DebugLogQueryResponse
-}): string {
-  return [
-    'status: ok',
-    formatScalarLine(DEBUG_LOG_QUERY_SUMMARY_REQUEST_ID_KEY, input.requestId),
-    formatScalarLine('outputDir', input.outputDir),
-    formatScalarLine('fileName', input.fileName),
-    formatScalarLine('filePath', input.filePath),
-    formatScalarLine('bytes', input.bytes),
-    formatScalarLine('format', DEBUG_LOG_EXPORT_FORMAT_LOG),
-    formatScalarLine(DEBUG_LOG_QUERY_SUMMARY_TOTAL_MATCHED_KEY, input.queryResult.totalMatched),
-    formatScalarLine(DEBUG_LOG_QUERY_SUMMARY_RETURNED_KEY, input.queryResult.returned),
-    formatScalarLine(DEBUG_LOG_QUERY_SUMMARY_HAS_MORE_KEY, input.queryResult.hasMore),
-    formatScalarLine(DEBUG_LOG_QUERY_SUMMARY_TOTAL_STORED_KEY, input.queryResult.totalStored),
-  ].join('\n')
-}
+const ElementTargetSchema = z.union([
+  z
+    .object({
+      selector: z.string().trim().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      snapshotId: z.string().trim().min(1),
+      ref: z.string().trim().min(1),
+    })
+    .strict(),
+])
 
 export class ToolRegistry {
   private readonly tools: ToolDefinition[] = [
-    createTool({
-      name: 'browser_open_tab',
-      description: 'Open one browser tab for a URL and make it the active selected tab.',
+    createRequestTool({
+      name: 'openAiWorkspaceTab',
+      description:
+        'Open a URL in the dedicated DataLens AI workspace window. Always use this before detecting or scraping a new website.',
+      commandName: 'ai_tool.open_workspace_tab',
       inputShape: {
-        url: z.string().url(),
-        openMode: z.enum(MCP_TAB_OPEN_MODE_OPTIONS).optional(),
+        url: z.string().trim().min(1),
+        openMode: z.enum(TAB_OPEN_MODE_OPTIONS).optional(),
       },
-      buildCommand: (args, context) => {
+      timeoutMs: AI_TOOL_RPC_TIMEOUT_MS,
+      payloadBuilder: (args, requestId) => {
         const payload: JsonObject = {
-          url: readRequiredString(args, 'url'),
+          requestId,
+          url: normalizeToolUrl(readRequiredString(args, 'url')),
         }
-        const openMode = readOptionalString(args, 'openMode')
-        if (openMode) {
-          payload.openMode = openMode
-        }
-
-        return {
-          commandName: 'browser.open_tab',
-          payload,
-          requestId: context.requestId,
-        }
+        includeOptionalString(payload, args, 'openMode')
+        return payload
       },
     }),
-    createTool({
-      name: 'browser_list_tabs',
-      description: 'List browser tabs available to the extension bridge.',
-      inputShape: {
-        currentWindowOnly: z.boolean().optional(),
-      },
-      buildCommand: (_args, context) => ({
-        commandName: 'browser.list_tabs',
-        payload: {},
-        requestId: context.requestId,
-      }),
-    }),
-    createTool({
-      name: 'browser_use_tab',
-      description: 'Select and activate one browser tab by tabId.',
-      inputShape: {
-        tabId: z.number().int().positive(),
-      },
-      buildCommand: (args, context) => ({
-        commandName: 'browser.use_tab',
-        payload: {
-          tabId: readRequiredNumber(args, 'tabId'),
-        },
-        requestId: context.requestId,
-      }),
-    }),
-    createTool({
-      name: 'browser_close_tab',
-      description: 'Close one browser tab by tabId.',
-      inputShape: {
-        tabId: z.number().int().positive(),
-      },
-      buildCommand: (args, context) => ({
-        commandName: 'browser.close_tab',
-        payload: {
-          tabId: readRequiredNumber(args, 'tabId'),
-        },
-        requestId: context.requestId,
-      }),
-    }),
-    createTool({
-      name: 'debug_get_logs',
-      description: 'Query structured extension debug logs stored in the background worker.',
-      inputShape: {
-        levels: z.array(z.enum(DEBUG_LOG_LEVEL_OPTIONS)).optional(),
-        sources: z.array(z.enum(DEBUG_LOG_SOURCE_OPTIONS)).optional(),
-        scope: z.string().optional(),
-        requestId: z.string().optional(),
-        jobId: z.string().optional(),
-        tabId: z.number().int().positive().optional(),
-        since: z.string().optional(),
-        until: z.string().optional(),
-        searchText: z.string().optional(),
-        limit: z.number().int().positive().max(DEBUG_LOG_EXPORT_MAX_LIMIT).optional(),
-      },
-      execute: async (args, context) => {
-        const jobId = readOptionalString(args, 'jobId')
-        const queryPayload = buildDebugLogQueryPayload(args)
-        const queryResponse = await context.sendCommand('debug.get_logs', queryPayload, {
-          requestId: context.requestId,
-          ...(jobId ? { jobId } : {}),
-          timeoutMs: DEBUG_LOG_EXPORT_TIMEOUT_MS,
-        })
-        const queryResult = parseDebugLogQueryResponse(queryResponse)
-
-        return createToolTextResult(
-          buildDebugLogText({
-            queryPayload,
-            queryResult,
-          })
-        )
-      },
-    }),
-    createTool({
-      name: 'debug_clear_logs',
-      description: 'Clear structured extension debug logs stored in the background worker.',
-      inputShape: {
-        levels: z.array(z.enum(DEBUG_LOG_LEVEL_OPTIONS)).optional(),
-        sources: z.array(z.enum(DEBUG_LOG_SOURCE_OPTIONS)).optional(),
-        scope: z.string().optional(),
-        requestId: z.string().optional(),
-        jobId: z.string().optional(),
-        tabId: z.number().int().positive().optional(),
-        since: z.string().optional(),
-        until: z.string().optional(),
-        searchText: z.string().optional(),
-      },
-      buildCommand: (args, context) => ({
-        commandName: 'debug.clear_logs',
-        payload: buildDebugLogClearPayload(args),
-        requestId: context.requestId,
-      }),
-    }),
-    createTool({
-      name: 'debug_export_logs_to_file',
+    createRequestTool({
+      name: 'readPageA11yTree',
       description:
-        'Export extension debug logs to a local multiline text log file and return the saved file path.',
+        'Read the accessibility tree for a browser tab or selected scrape target to understand page structure.',
+      commandName: 'ai_tool.read_page_a11y_tree',
       inputShape: {
-        levels: z.array(z.enum(DEBUG_LOG_LEVEL_OPTIONS)).optional(),
-        sources: z.array(z.enum(DEBUG_LOG_SOURCE_OPTIONS)).optional(),
-        scope: z.string().optional(),
-        requestId: z.string().optional(),
-        jobId: z.string().optional(),
-        tabId: z.number().int().positive().optional(),
-        since: z.string().optional(),
-        until: z.string().optional(),
-        searchText: z.string().optional(),
-        limit: z.number().int().positive().max(DEBUG_LOG_EXPORT_MAX_LIMIT).optional(),
-        outputDir: z.string(),
-        fileName: z.string().optional(),
+        tabId: z.number().min(1),
+        scope: z.enum(A11Y_TREE_SCOPE_OPTIONS).optional(),
+        rootSelector: z.string().trim().min(1).optional(),
+        itemSelector: z.string().trim().min(1).optional(),
+        documentInfoPath: z.string().optional(),
+        maxLength: z.number().min(1).optional(),
       },
-      execute: async (args, context) => {
-        const outputDir = readRequiredString(args, 'outputDir')
-        const fileName = readOptionalString(args, 'fileName')
-        const jobId = readOptionalString(args, 'jobId')
-        const queryPayload = buildDebugLogQueryPayload(args, DEBUG_LOG_EXPORT_DEFAULT_LIMIT)
-        const exportResponse = await context.sendCommand('debug.get_logs', queryPayload, {
-          requestId: context.requestId,
-          ...(jobId ? { jobId } : {}),
-          timeoutMs: DEBUG_LOG_EXPORT_TIMEOUT_MS,
-        })
-        const queryResult = parseDebugLogQueryResponse(exportResponse)
-        const normalizedFileName = normalizeFileName({
-          preferredFileName: fileName,
-          fallbackFileName: `${DEBUG_LOG_EXPORT_DEFAULT_FILE_PREFIX}_${Date.now()}.${DEBUG_LOG_EXPORT_FORMAT_LOG}`,
-          extension: DEBUG_LOG_EXPORT_FORMAT_LOG,
-        })
-        const resolvedOutputDir = path.resolve(outputDir)
-        await fs.mkdir(resolvedOutputDir, { recursive: true })
-        const filePath = path.join(resolvedOutputDir, normalizedFileName)
-        const exportedAt = new Date().toISOString()
-        const exportPayload = buildDebugLogText({
-          queryPayload,
-          queryResult,
-          requestId: context.requestId,
-          exportedAt,
-          format: DEBUG_LOG_EXPORT_FORMAT_LOG,
-        })
-
-        await fs.writeFile(filePath, exportPayload, 'utf8')
-        const stat = await fs.stat(filePath)
-
-        return createToolTextResult(
-          buildDebugLogExportResultText({
-            requestId: context.requestId,
-            outputDir: resolvedOutputDir,
-            fileName: normalizedFileName,
-            filePath,
-            bytes: stat.size,
-            queryResult,
-          })
-        )
+      timeoutMs: AI_TOOL_RPC_TIMEOUT_MS,
+      payloadBuilder: (args, requestId) => {
+        const payload: JsonObject = {
+          requestId,
+          tabId: readRequiredNumber(args, 'tabId'),
+        }
+        includeOptionalString(payload, args, 'scope')
+        includeOptionalString(payload, args, 'rootSelector')
+        includeOptionalString(payload, args, 'itemSelector')
+        includeOptionalString(payload, args, 'documentInfoPath')
+        includeOptionalNumber(payload, args, 'maxLength')
+        return payload
       },
     }),
-    createTool({
-      name: 'scrape_detect_tables',
+    createRequestTool({
+      name: 'operatePage',
       description:
-        'Step 1 of 3: Scan the current tab for table-like elements using DOM heuristics only (no backend API call). Returns a compact list of detected tables with selectors and sample item rows for the agent to inspect. Call scrape_get_table_tree to obtain the UID-annotated simplified DOM tree for a specific table when you need to identify expand buttons or inspect structure.',
+        'Operate on a browser page for setup before scrape detection: click tabs, log in, search, filter, accept dialogs, or position the target list. This is not a collection tool; do not use scroll to load more rows, increase preview size, or satisfy a requested scrape count because startScrape handles scrolling/pagination/loading during collection.',
+      commandName: 'ai_tool.operate_page',
       inputShape: {
-        tabId: z.number().int().positive().optional(),
-        url: z.string().url().optional(),
+        tabId: z.number().min(1),
+        operation: z.enum(PAGE_OPERATION_OPTIONS),
+        target: ElementTargetSchema.optional(),
+        direction: z.enum(SCROLL_DIRECTION_OPTIONS).optional(),
+        amount: z
+          .number()
+          .min(1)
+          .describe(
+            'Scroll distance in pixels for setup-only page positioning before detection. Do not scroll to load more rows, increase preview size, or satisfy a requested scrape count.'
+          )
+          .optional(),
+        waitFor: z.enum(CLICK_WAIT_MODE_OPTIONS).optional(),
+        timeoutMs: z.number().min(1).optional(),
+        text: z.string().optional(),
+        mode: z.enum(INPUT_TEXT_MODE_OPTIONS).optional(),
+      },
+      validateArgs: validateOperatePageArgs,
+      timeoutMs: AI_TOOL_RPC_TIMEOUT_MS,
+      payloadBuilder: (args, requestId) => {
+        const operation = readRequiredString(args, 'operation')
+        const payload: JsonObject = {
+          requestId,
+          tabId: readRequiredNumber(args, 'tabId'),
+          operation,
+        }
+        const target = args.target
+        if (target !== undefined) {
+          payload.target = target
+        }
+        includeOptionalString(payload, args, 'direction')
+        includeOptionalNumber(payload, args, 'amount')
+        includeOptionalString(payload, args, 'waitFor')
+        includeOptionalNumber(payload, args, 'timeoutMs')
+        includeOptionalString(payload, args, 'text')
+        includeOptionalString(payload, args, 'mode')
+        return payload
+      },
+    }),
+    createRequestTool({
+      name: 'detectScrapeTargets',
+      description:
+        'Detect repeated scrape targets such as tables, cards, listings, comments, or search results in an existing tab.',
+      commandName: 'ai_tool.detect_scrape_targets',
+      inputShape: {
+        tabId: z.number().min(1),
         prompt: z.string().optional(),
-        tabOpenMode: z.enum(MCP_TAB_OPEN_MODE_OPTIONS).optional(),
       },
-      buildCommand: (args, context) => {
-        const tabId = readOptionalNumber(args, 'tabId')
-        const url = readOptionalString(args, 'url')
-        const prompt = readOptionalString(args, 'prompt')
-        const tabOpenMode = readOptionalString(args, 'tabOpenMode')
-
-        return {
-          commandName: 'scrape.detect_tables',
-          payload: {
-            requestId: context.requestId,
-            ...(tabId !== undefined
-              ? { tabId }
-              : context.selectedTabId !== null
-                ? { tabId: context.selectedTabId }
-                : {}),
-            ...(url ? { url } : {}),
-            ...(prompt ? { prompt } : {}),
-            ...(tabOpenMode ? { tabOpenMode } : {}),
-          },
-          requestId: context.requestId,
+      timeoutMs: AI_TOOL_LONG_RPC_TIMEOUT_MS,
+      payloadBuilder: (args, requestId) => {
+        const payload: JsonObject = {
+          requestId,
+          tabId: readRequiredNumber(args, 'tabId'),
         }
+        includeOptionalString(payload, args, 'prompt')
+        return payload
       },
     }),
-    createTool({
-      name: 'scrape_get_table_tree',
+    createRequestTool({
+      name: 'analyzeScrapeConfig',
       description:
-        'Fetch the UID-annotated simplified DOM tree for a specific table. Use this after scrape_detect_tables when you need to inspect the tree structure of a particular table — for example, to identify UIDs of expand/reply buttons to pass to scrape_click_expand_and_redetect. Returns the simplified tree with _uid annotations on every node.',
+        'Analyze a selected scrape target, expand detected expandable content, infer columns and pagination, and return a complete scrapeConfig plus preview rows. Preview rows validate the configuration only; they are not final collection and do not fulfill requested record counts.',
+      commandName: 'ai_tool.analyze_scrape_config',
       inputShape: {
-        tabId: z.number().int().positive().optional(),
-        rootSelector: z.string(),
-        itemSelector: z.string(),
+        tabId: z.number().min(1),
+        rootSelector: z.string().trim().min(1),
+        itemSelector: z.string().trim().min(1),
         documentInfoPath: z.string(),
+        prompt: z.string().optional(),
+        previewLimit: z.number().min(1).optional(),
       },
-      buildCommand: (args, context) => {
-        return {
-          commandName: 'scrape.get_table_tree',
-          payload: {
-            requestId: context.requestId,
-            ...(context.selectedTabId !== null ? { tabId: context.selectedTabId } : {}),
-            rootSelector: readRequiredString(args, 'rootSelector'),
-            itemSelector: readRequiredString(args, 'itemSelector'),
-            documentInfoPath: readRequiredString(args, 'documentInfoPath'),
-          },
-          requestId: context.requestId,
+      timeoutMs: AI_TOOL_LONG_RPC_TIMEOUT_MS,
+      payloadBuilder: (args, requestId) => {
+        const payload: JsonObject = {
+          requestId,
+          tabId: readRequiredNumber(args, 'tabId'),
+          rootSelector: readRequiredString(args, 'rootSelector'),
+          itemSelector: readRequiredString(args, 'itemSelector'),
+          documentInfoPath: readRequiredString(args, 'documentInfoPath'),
         }
+        includeOptionalString(payload, args, 'prompt')
+        includeOptionalNumber(payload, args, 'previewLimit')
+        return payload
       },
     }),
-    createTool({
-      name: 'scrape_click_expand_and_redetect',
+    createRequestTool({
+      name: 'applyDrillDownScrape',
       description:
-        'Step 2 of 3 (optional): Click expand/reply buttons identified by the agent from the table tree, then re-detect the table. Call scrape_get_table_tree first to inspect the tree, identify the UIDs of expand buttons, then pass those UIDs here. Pass rootSelector, itemSelector, and documentInfoPath from the selected table.',
+        'Use this after analyzeScrapeConfig and before startScrape when the user wants fields from each row\'s linked detail page, such as body text, full text, article content, product details, company profiles, job detail pages, 正文, 详情页, 全文, 点开链接, or 每条新闻内容. This updates the latest scrapeConfig with drillDownFields; pass the returned scrapeConfig to startScrape instead of starting the original jobId/config.',
+      commandName: 'ai_tool.apply_drill_down_scrape',
       inputShape: {
-        tabId: z.number().int().positive().optional(),
-        rootSelector: z.string(),
-        itemSelector: z.string(),
-        documentInfoPath: z.string(),
-        expandButtonUids: z.array(
-          z.object({
-            type: z.string(),
-            uids: z.array(z.string()),
-          })
+        tabId: z
+          .number()
+          .min(1)
+          .describe('Browser tab containing the already analyzed list page.'),
+        scrapeConfig: JsonObjectSchema.describe(
+          'Latest scrapeConfig returned by analyzeScrapeConfig or by a previous applyDrillDownScrape call. Use the updated scrapeConfig returned by this tool for any later startScrape call.'
         ),
-      },
-      buildCommand: (args, context) => {
-        return {
-          commandName: 'scrape.click_expand_and_redetect',
-          payload: {
-            requestId: context.requestId,
-            ...(context.selectedTabId !== null ? { tabId: context.selectedTabId } : {}),
-            rootSelector: readRequiredString(args, 'rootSelector'),
-            itemSelector: readRequiredString(args, 'itemSelector'),
-            documentInfoPath: readRequiredString(args, 'documentInfoPath'),
-            expandButtonUids: args['expandButtonUids'],
-          },
-          requestId: context.requestId,
-        }
-      },
-    }),
-    createTool({
-      name: 'scrape_analyze_columns',
-      description:
-        'Step 3 of 3: Analyze columns and build a scraperConfig draft by calling the backend AI APIs (analyze-columns, detect-pagination). Pass rootSelector, itemSelector, documentInfoPath from the selected / post-expansion table, and optionally expandButtons from scrape_expand_replies.',
-      inputShape: {
-        tabId: z.number().int().positive().optional(),
-        url: z.string().url().optional(),
-        prompt: z.string().optional(),
-        rootSelector: z.string(),
-        itemSelector: z.string(),
-        documentInfoPath: z.string(),
-        expandButtons: z
-          .array(
-            z.object({
-              type: z.string(),
-              uids: z.array(z.string()),
-            })
+        fieldKey: z
+          .string()
+          .trim()
+          .min(1)
+          .describe(
+            'Key of the root-level link field in scrapeConfig.tableInfo.fields to open for each row. Prefer fields whose extractType is "anchor" or "only_anchor".'
+          ),
+        prompt: z
+          .string()
+          .trim()
+          .min(1)
+          .describe(
+            'Describe only the fields to extract from the opened detail page, for example price, description, full article content, author, company size, or job requirements.'
+          ),
+        sampleItemIndex: z
+          .number()
+          .min(0)
+          .describe(
+            'Zero-based row index to use as the sample link for detail-page analysis. Omit this unless the first row is not representative.'
           )
           .optional(),
       },
-      buildCommand: (args, context) => {
-        const tabId = readOptionalNumber(args, 'tabId')
-        const url = readOptionalString(args, 'url')
-        const prompt = readOptionalString(args, 'prompt')
-        const expandButtons = args['expandButtons']
-
-        return {
-          commandName: 'scrape.analyze_columns',
-          payload: {
-            requestId: context.requestId,
-            ...(tabId !== undefined
-              ? { tabId }
-              : context.selectedTabId !== null
-                ? { tabId: context.selectedTabId }
-                : {}),
-            ...(url ? { url } : {}),
-            ...(prompt ? { prompt } : {}),
-            rootSelector: readRequiredString(args, 'rootSelector'),
-            itemSelector: readRequiredString(args, 'itemSelector'),
-            documentInfoPath: readRequiredString(args, 'documentInfoPath'),
-            ...(expandButtons !== undefined ? { expandButtons } : {}),
-          },
-          requestId: context.requestId,
-        }
-      },
-    }),
-    createTool({
-      name: 'scrape_start',
-      description:
-        'Start a scraping job from a cached prepare jobId, a prepared draft, or an explicit scraperConfig.',
-      inputShape: {
-        requestId: z.string().optional(),
-        jobId: z.string().optional(),
-        tabId: z.number().int().positive().optional(),
-        maxRecords: z.number().int().positive().optional(),
-        jobDraft: JsonObjectSchema.optional(),
-        scraperConfig: JsonObjectSchema.optional(),
-      },
-      buildCommand: (args, context) => {
-        const requestId = readOptionalString(args, 'requestId') || context.requestId
-        const jobId = readOptionalString(args, 'jobId')
-        const tabId = readOptionalNumber(args, 'tabId')
-        const maxRecords = readOptionalNumber(args, 'maxRecords')
-        const jobDraft = readOptionalObject(args, 'jobDraft')
-        const scraperConfig = readOptionalObject(args, 'scraperConfig')
-
-        return {
-          commandName: 'scrape.start',
-          payload: {
-            requestId,
-            ...(tabId !== undefined
-              ? { tabId }
-              : context.selectedTabId !== null
-                ? { tabId: context.selectedTabId }
-                : {}),
-            ...(jobId ? { jobId } : {}),
-            ...(maxRecords !== undefined ? { maxRecords } : {}),
-            ...(jobDraft ? { jobDraft } : {}),
-            ...(scraperConfig ? { scraperConfig } : {}),
-          },
+      timeoutMs: AI_TOOL_LONG_RPC_TIMEOUT_MS,
+      payloadBuilder: (args, requestId) => {
+        const payload: JsonObject = {
           requestId,
+          tabId: readRequiredNumber(args, 'tabId'),
+          scrapeConfig: readRequiredObject(args, 'scrapeConfig'),
+          fieldKey: readRequiredString(args, 'fieldKey'),
+          prompt: readRequiredString(args, 'prompt'),
         }
+        includeOptionalNumber(payload, args, 'sampleItemIndex')
+        return payload
       },
     }),
     createTool({
-      name: 'scrape_status',
+      name: 'startScrape',
       description:
-        'Get latest state and counters of a scraping job. Supports optional waitMs to delay the status check.',
+        'Start the scraper and perform the actual data collection from a prior analysis jobId or a complete latest scrapeConfig. This is the only tool that collects requested records; use maxRecords for requested counts such as 20 items. Results are saved automatically after completion.',
       inputShape: {
-        jobId: z.string(),
-        waitMs: z.number().int().min(0).max(300_000).optional(),
+        tabId: z
+          .number()
+          .min(1)
+          .describe('Browser tab containing the analyzed list page.')
+          .optional(),
+        jobId: z
+          .string()
+          .trim()
+          .min(1)
+          .describe(
+            'Prior analysis jobId to start only when no later config mutation, such as drill-down extraction, is needed.'
+          )
+          .optional(),
+        scrapeConfig: JsonObjectSchema.describe(
+          'Complete latest scrapeConfig to execute. Use this after applyDrillDownScrape or any config mutation so detail-page fields are included.'
+        ).optional(),
+        maxRecords: z
+          .number()
+          .min(1)
+          .describe(
+            'Requested number of records to collect, such as 20 for "20 items/articles". Use this instead of scrolling or loading more rows manually.'
+          )
+          .optional(),
       },
+      validateArgs: validateStartScrapeArgs,
       execute: async (args, context) => {
-        const jobId = readRequiredString(args, 'jobId')
-        const waitMs = readOptionalNumber(args, 'waitMs')
-
-        if (waitMs !== undefined && waitMs > 0) {
-          await waitForMs(waitMs)
-        }
-
-        return context.sendCommand(
-          'scrape.status',
-          {
-            jobId,
-          },
+        const startResponse = await context.sendCommand(
+          'ai_tool.start_scrape',
+          createStartScrapePayload(args, context.requestId),
           {
             requestId: context.requestId,
-            jobId,
+            timeoutMs: AI_TOOL_RPC_TIMEOUT_MS,
           }
         )
-      },
-    }),
-    createTool({
-      name: 'scrape_pause',
-      description: 'Pause a running scraping job.',
-      inputShape: {
-        jobId: z.string(),
-      },
-      buildCommand: (args, context) => ({
-        commandName: 'scrape.pause',
-        payload: {
-          jobId: readRequiredString(args, 'jobId'),
-        },
-        requestId: context.requestId,
-      }),
-    }),
-    createTool({
-      name: 'scrape_resume',
-      description: 'Resume a paused scraping job.',
-      inputShape: {
-        jobId: z.string(),
-      },
-      buildCommand: (args, context) => ({
-        commandName: 'scrape.resume',
-        payload: {
-          jobId: readRequiredString(args, 'jobId'),
-        },
-        requestId: context.requestId,
-      }),
-    }),
-    createTool({
-      name: 'scrape_stop',
-      description: 'Stop a running or paused scraping job.',
-      inputShape: {
-        jobId: z.string(),
-      },
-      buildCommand: (args, context) => ({
-        commandName: 'scrape.stop',
-        payload: {
-          jobId: readRequiredString(args, 'jobId'),
-        },
-        requestId: context.requestId,
-      }),
-    }),
-    createTool({
-      name: 'scrape_result',
-      description: 'Fetch paginated rows from a scraping job result set.',
-      inputShape: {
-        jobId: z.string(),
-        cursor: z.string().optional(),
-        limit: z.number().int().positive().max(1000).optional(),
-      },
-      buildCommand: (args, context) => {
-        const cursor = readOptionalString(args, 'cursor')
-        const limit = readOptionalNumber(args, 'limit')
+        let job = getJobFromResponse(startResponse)
+        const jobId = getJobId(job)
 
-        return {
-          commandName: 'scrape.result',
-          payload: {
-            jobId: readRequiredString(args, 'jobId'),
-            ...(cursor ? { cursor } : {}),
-            ...(limit !== undefined ? { limit } : {}),
-          },
-          requestId: context.requestId,
-        }
-      },
-    }),
-    createTool({
-      name: 'scrape_export',
-      description: 'Export a scraping job result into json/csv/xlsx artifact.',
-      inputShape: {
-        jobId: z.string(),
-        format: z.enum(['json', 'csv', 'xlsx']).optional(),
-      },
-      buildCommand: (args, context) => {
-        const format = readOptionalString(args, 'format')
+        while (!isTerminalScrapeJobState(getJobState(job))) {
+          try {
+            await waitForScrapePollInterval(context.abortSignal)
+          } catch {
+            return await stopScrapeJob(jobId, context)
+          }
 
-        return {
-          commandName: 'scrape.export',
-          payload: {
-            jobId: readRequiredString(args, 'jobId'),
-            ...(format ? { format } : {}),
-          },
-          requestId: context.requestId,
+          const statusResponse = await context.sendCommand(
+            'ai_tool.get_scrape_job_status',
+            {
+              requestId: context.requestId,
+              jobId,
+            },
+            {
+              requestId: context.requestId,
+              jobId,
+              timeoutMs: AI_TOOL_RPC_TIMEOUT_MS,
+            }
+          )
+          job = getJobFromResponse(statusResponse)
         }
+
+        return createStartScrapeFinalResponse(context.requestId, job)
       },
     }),
-    createTool({
-      name: 'scrape_export_to_file',
+    createRequestTool({
+      name: 'listWorkspaceAssets',
       description:
-        'Export scraping result and save directly to local filesystem directory, returning file path instead of base64.',
+        'List DataLens data workspace assets. Defaults to current_thread; use scope "workspace" only when the user asks to view all workspace data or a file from another chat/task.',
+      commandName: 'data_workbench.list_workspace_assets',
       inputShape: {
-        jobId: z.string(),
-        format: z.enum(['json', 'csv', 'xlsx']).optional(),
-        outputDir: z.string(),
-        fileName: z.string().optional(),
+        limit: z.number().min(1).max(200).optional(),
+        scope: z.enum(ASSET_SCOPE_OPTIONS).optional(),
       },
-      execute: async (args, context) => {
-        const jobId = readRequiredString(args, 'jobId')
-        const outputDir = readRequiredString(args, 'outputDir')
-        const fileName = readOptionalString(args, 'fileName')
-        const format = resolveExportFormat(readOptionalString(args, 'format'))
-
-        const exportResponse = await context.sendCommand(
-          'scrape.export',
-          {
-            jobId,
-            format,
-          },
-          {
-            requestId: context.requestId,
-            jobId,
-            timeoutMs: 10 * 60_000,
-          }
-        )
-
-        const artifactRaw = exportResponse.artifact
-        if (!artifactRaw || typeof artifactRaw !== 'object' || Array.isArray(artifactRaw)) {
-          throw new Error('Invalid scrape.export response: missing artifact')
+      payloadBuilder: args => {
+        const payload: JsonObject = {}
+        includeOptionalNumber(payload, args, 'limit')
+        includeOptionalString(payload, args, 'scope')
+        return payload
+      },
+    }),
+    createRequestTool({
+      name: 'inspectWorkspaceAsset',
+      description:
+        'Inspect a workspace CSV file by fileName. Defaults to current_thread scope; use scope "workspace" only for all-workspace or older-task files. Use inspectLevel "sample" for quick checks, "quality" before cleaning, and "stats" before analysis.',
+      commandName: 'data_workbench.inspect_workspace_asset',
+      inputShape: {
+        fileName: z.string().trim().min(1),
+        inspectLevel: z.enum(INSPECT_LEVEL_OPTIONS).optional(),
+        sampleLimit: z.number().min(1).max(50).optional(),
+        scope: z.enum(ASSET_SCOPE_OPTIONS).optional(),
+      },
+      payloadBuilder: args => {
+        const payload: JsonObject = {
+          fileName: readRequiredString(args, 'fileName'),
         }
-
-        const artifact = artifactRaw as JsonObject
-        const contentBase64 = artifact.contentBase64
-        if (typeof contentBase64 !== 'string' || contentBase64.length === 0) {
-          throw new Error('Invalid scrape.export response: empty contentBase64')
+        includeOptionalString(payload, args, 'inspectLevel')
+        includeOptionalNumber(payload, args, 'sampleLimit')
+        includeOptionalString(payload, args, 'scope')
+        return payload
+      },
+    }),
+    createRequestTool({
+      name: 'runDataCode',
+      description:
+        'Run AI-generated Python code against selected workspace CSV files in the DataLens sandbox. Defaults to current_thread scope; use scope "workspace" only for all-workspace or older-task files. Input files are available as /workspace/input/{fileName}. Write preview or final outputs to /workspace/output and include a manifest.json when producing files. Use mode "preview" before ambiguous transformations and mode "persist" when the user wants saved CSV or chart outputs.',
+      commandName: 'data_workbench.run_data_code',
+      inputShape: {
+        fileNames: z.array(z.string().trim().min(1)).min(1).max(10),
+        code: z.string().trim().min(1),
+        language: z.enum(DATA_CODE_LANGUAGE_OPTIONS),
+        mode: z.enum(DATA_CODE_MODE_OPTIONS).optional(),
+        outputKind: z.enum(DATA_CODE_OUTPUT_KIND_OPTIONS).optional(),
+        scope: z.enum(ASSET_SCOPE_OPTIONS).optional(),
+        timeoutMs: z.number().min(1).max(120_000).optional(),
+      },
+      timeoutMs: AI_TOOL_LONG_RPC_TIMEOUT_MS,
+      payloadBuilder: args => {
+        const payload: JsonObject = {
+          fileNames: args.fileNames,
+          code: readRequiredString(args, 'code'),
+          language: readRequiredString(args, 'language'),
         }
-
-        const artifactFileName =
-          typeof artifact.fileName === 'string' ? artifact.fileName : undefined
-        const normalizedFileName = normalizeFileName({
-          preferredFileName: fileName,
-          fallbackFileName: artifactFileName,
-          extension: format,
-        })
-
-        const resolvedOutputDir = path.resolve(outputDir)
-        await fs.mkdir(resolvedOutputDir, { recursive: true })
-        const filePath = path.join(resolvedOutputDir, normalizedFileName)
-
-        await fs.writeFile(filePath, contentBase64, { encoding: 'base64' })
-        const stat = await fs.stat(filePath)
-
-        const artifactId = typeof artifact.artifactId === 'string' ? artifact.artifactId : undefined
-        const mimeType =
-          typeof artifact.mimeType === 'string' && artifact.mimeType.length > 0
-            ? artifact.mimeType
-            : inferMimeType(format)
-
-        return {
-          status: 'ok',
-          requestId: context.requestId,
-          jobId,
-          format,
-          outputDir: resolvedOutputDir,
-          fileName: normalizedFileName,
-          filePath,
-          bytes: stat.size,
-          mimeType,
-          ...(artifactId ? { artifactId } : {}),
-        }
+        includeOptionalString(payload, args, 'mode')
+        includeOptionalString(payload, args, 'outputKind')
+        includeOptionalString(payload, args, 'scope')
+        includeOptionalNumber(payload, args, 'timeoutMs')
+        return payload
       },
     }),
   ]

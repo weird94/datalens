@@ -7,12 +7,21 @@ import { runOneCase } from '../run-one'
 import type { RegressionPreDetectArtifact, RegressionPreDetectService } from '../playwright-pre-detect'
 import type { RegressionCaseRow, RegressionJsonObject, RegressionJsonValue } from '../types'
 
+type MockRegressionResponse = RegressionJsonValue | Error
+
 class MockRegressionMcpClient implements RegressionMcpToolClient {
-  readonly calls: Array<{ toolName: string; args: RegressionJsonObject }> = []
+  readonly calls: Array<{
+    toolName: string
+    args: RegressionJsonObject
+    options?: { timeoutMs?: number }
+  }> = []
 
   constructor(
     private readonly responses: Partial<
-      Record<(typeof REGRESSION_MCP_TOOL_NAMES)[keyof typeof REGRESSION_MCP_TOOL_NAMES], RegressionJsonValue[]>
+      Record<
+        (typeof REGRESSION_MCP_TOOL_NAMES)[keyof typeof REGRESSION_MCP_TOOL_NAMES],
+        MockRegressionResponse[]
+      >
     >
   ) {}
 
@@ -20,9 +29,10 @@ class MockRegressionMcpClient implements RegressionMcpToolClient {
 
   async callTool(
     toolName: (typeof REGRESSION_MCP_TOOL_NAMES)[keyof typeof REGRESSION_MCP_TOOL_NAMES],
-    args: RegressionJsonObject
+    args: RegressionJsonObject,
+    options?: { timeoutMs?: number }
   ): Promise<RegressionJsonValue> {
-    this.calls.push({ toolName, args })
+    this.calls.push({ toolName, args, ...(options ? { options } : {}) })
     const toolResponses = this.responses[toolName]
     if (!toolResponses || toolResponses.length === 0) {
       throw new Error(`Unexpected tool call: ${toolName}`)
@@ -31,6 +41,10 @@ class MockRegressionMcpClient implements RegressionMcpToolClient {
     const nextResponse = toolResponses.shift()
     if (nextResponse === undefined) {
       throw new Error(`Missing tool response: ${toolName}`)
+    }
+
+    if (nextResponse instanceof Error) {
+      throw nextResponse
     }
 
     return nextResponse
@@ -66,17 +80,14 @@ function createCase(): RegressionCaseRow {
   }
 }
 
-function createSuccessResponses(
-  artifactDirPath: string
-): Partial<
+function createSuccessResponses(): Partial<
   Record<
     (typeof REGRESSION_MCP_TOOL_NAMES)[keyof typeof REGRESSION_MCP_TOOL_NAMES],
-    RegressionJsonValue[]
+    MockRegressionResponse[]
   >
 > {
   return {
-    [REGRESSION_MCP_TOOL_NAMES.DEBUG_CLEAR_LOGS]: [{ clearedCount: 1 }],
-    [REGRESSION_MCP_TOOL_NAMES.BROWSER_OPEN_TAB]: [
+    [REGRESSION_MCP_TOOL_NAMES.OPEN_AI_WORKSPACE_TAB]: [
       {
         tab: {
           id: 77,
@@ -87,9 +98,9 @@ function createSuccessResponses(
         },
       },
     ],
-    [REGRESSION_MCP_TOOL_NAMES.SCRAPE_DETECT_TABLES]: [
+    [REGRESSION_MCP_TOOL_NAMES.DETECT_SCRAPE_TARGETS]: [
       {
-        tables: [
+        targets: [
           {
             index: 0,
             name: 'Places',
@@ -103,17 +114,15 @@ function createSuccessResponses(
         tabId: 77,
         url: 'https://example.com/maps',
         title: 'Maps',
-        selectedTableIndex: 0,
+        selectedTargetIndex: 0,
       },
     ],
-    [REGRESSION_MCP_TOOL_NAMES.SCRAPE_GET_TABLE_TREE]: [
+    [REGRESSION_MCP_TOOL_NAMES.READ_PAGE_A11Y_TREE]: [
       {
-        root: {
-          name: 'tree',
-        },
+        tree: 'document tree',
       },
     ],
-    [REGRESSION_MCP_TOOL_NAMES.SCRAPE_ANALYZE_COLUMNS]: [
+    [REGRESSION_MCP_TOOL_NAMES.ANALYZE_SCRAPE_CONFIG]: [
       {
         jobId: 'job-prepare-1',
         jobDraft: {
@@ -125,15 +134,7 @@ function createSuccessResponses(
         },
       },
     ],
-    [REGRESSION_MCP_TOOL_NAMES.SCRAPE_START]: [
-      {
-        job: {
-          jobId: 'job-run-1',
-          state: 'RUNNING',
-        },
-      },
-    ],
-    [REGRESSION_MCP_TOOL_NAMES.SCRAPE_STATUS]: [
+    [REGRESSION_MCP_TOOL_NAMES.START_SCRAPE]: [
       {
         job: {
           jobId: 'job-run-1',
@@ -141,17 +142,26 @@ function createSuccessResponses(
         },
       },
     ],
-    [REGRESSION_MCP_TOOL_NAMES.SCRAPE_EXPORT_TO_FILE]: [
+    [REGRESSION_MCP_TOOL_NAMES.LIST_WORKSPACE_ASSETS]: [
       {
-        filePath: path.join(artifactDirPath, 'data.json'),
+        files: [
+          {
+            fileName: 'rows.csv',
+            status: 'uploaded',
+          },
+        ],
+        scope: 'current_thread',
       },
     ],
-    [REGRESSION_MCP_TOOL_NAMES.DEBUG_EXPORT_LOGS_TO_FILE]: [
+    [REGRESSION_MCP_TOOL_NAMES.INSPECT_WORKSPACE_ASSET]: [
       {
-        filePath: path.join(artifactDirPath, 'debug.log'),
+        file: {
+          fileName: 'rows.csv',
+        },
+        sample: [],
+        schema: [],
       },
     ],
-    [REGRESSION_MCP_TOOL_NAMES.BROWSER_CLOSE_TAB]: [{ tabId: 77 }],
   }
 }
 
@@ -166,13 +176,12 @@ afterEach(async () => {
 })
 
 describe('runOneCase', () => {
-  it('closes the opened tab after a case-level detect failure', async () => {
-    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'run-one-close-tab-'))
+  it('reports a case-level detect failure after opening the AI workspace tab', async () => {
+    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'run-one-detect-failure-'))
     tempDirs.push(outputRoot)
     const sleep = vi.fn(async (_delayMs: number) => {})
     const client = new MockRegressionMcpClient({
-      [REGRESSION_MCP_TOOL_NAMES.DEBUG_CLEAR_LOGS]: [{ clearedCount: 1 }],
-      [REGRESSION_MCP_TOOL_NAMES.BROWSER_OPEN_TAB]: [
+      [REGRESSION_MCP_TOOL_NAMES.OPEN_AI_WORKSPACE_TAB]: [
         {
           tab: {
             id: 77,
@@ -183,9 +192,9 @@ describe('runOneCase', () => {
           },
         },
       ],
-      [REGRESSION_MCP_TOOL_NAMES.SCRAPE_DETECT_TABLES]: [
+      [REGRESSION_MCP_TOOL_NAMES.DETECT_SCRAPE_TARGETS]: [
         {
-          tables: [
+          targets: [
             {
               index: 0,
               name: 'Navigation',
@@ -199,15 +208,9 @@ describe('runOneCase', () => {
           tabId: 77,
           url: 'https://example.com/maps',
           title: 'Maps',
-          selectedTableIndex: -1,
+          selectedTargetIndex: -1,
         },
       ],
-      [REGRESSION_MCP_TOOL_NAMES.DEBUG_EXPORT_LOGS_TO_FILE]: [
-        {
-          filePath: path.join(outputRoot, '20260327', '001-google-maps', 'debug.log'),
-        },
-      ],
-      [REGRESSION_MCP_TOOL_NAMES.BROWSER_CLOSE_TAB]: [{ tabId: 77 }],
     })
 
     const result = await runOneCase({
@@ -224,33 +227,29 @@ describe('runOneCase', () => {
     })
 
     expect(result.manifestEntry.runnerState).toBe('FAILED_DETECT')
-    expect(result.manifestEntry.errorMessage).toBe('detectTables did not return a valid selected table')
+    expect(result.manifestEntry.errorMessage).toBe(
+      'detectScrapeTargets did not return a valid selected target'
+    )
     expect(sleep).toHaveBeenCalledWith(30_000)
     expect(client.calls.map(call => call.toolName)).toEqual([
-      REGRESSION_MCP_TOOL_NAMES.DEBUG_CLEAR_LOGS,
-      REGRESSION_MCP_TOOL_NAMES.BROWSER_OPEN_TAB,
-      REGRESSION_MCP_TOOL_NAMES.SCRAPE_DETECT_TABLES,
-      REGRESSION_MCP_TOOL_NAMES.DEBUG_EXPORT_LOGS_TO_FILE,
-      REGRESSION_MCP_TOOL_NAMES.BROWSER_CLOSE_TAB,
+      REGRESSION_MCP_TOOL_NAMES.OPEN_AI_WORKSPACE_TAB,
+      REGRESSION_MCP_TOOL_NAMES.DETECT_SCRAPE_TARGETS,
     ])
-    expect(client.calls[1]?.args).toEqual({
+    expect(client.calls[0]?.args).toEqual({
       url: 'https://example.com/maps',
       openMode: 'create_new',
     })
-    expect(client.calls[2]?.args).toEqual({
+    expect(client.calls[1]?.args).toEqual({
       tabId: 77,
       prompt: 'Extract rows.',
     })
-    expect(client.calls[4]?.args).toEqual({ tabId: 77 })
   })
 
   it('omits blank scrape prompts from detect and analyze requests', async () => {
     const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'run-one-blank-prompt-'))
     tempDirs.push(outputRoot)
     const sleep = vi.fn(async (_delayMs: number) => {})
-    const client = new MockRegressionMcpClient(
-      createSuccessResponses(path.join(outputRoot, '20260327', '001-google-maps'))
-    )
+    const client = new MockRegressionMcpClient(createSuccessResponses())
 
     const result = await runOneCase({
       client,
@@ -271,10 +270,10 @@ describe('runOneCase', () => {
     expect(result.manifestEntry.runnerState).toBe('COMPLETED')
 
     const detectCall = client.calls.find(
-      call => call.toolName === REGRESSION_MCP_TOOL_NAMES.SCRAPE_DETECT_TABLES
+      call => call.toolName === REGRESSION_MCP_TOOL_NAMES.DETECT_SCRAPE_TARGETS
     )
     const analyzeCall = client.calls.find(
-      call => call.toolName === REGRESSION_MCP_TOOL_NAMES.SCRAPE_ANALYZE_COLUMNS
+      call => call.toolName === REGRESSION_MCP_TOOL_NAMES.ANALYZE_SCRAPE_CONFIG
     )
 
     expect(detectCall?.args).toEqual({
@@ -286,15 +285,20 @@ describe('runOneCase', () => {
       itemSelector: 'div.card',
       documentInfoPath: 'window.document',
     })
+
+    const startCall = client.calls.find(
+      call => call.toolName === REGRESSION_MCP_TOOL_NAMES.START_SCRAPE
+    )
+    expect(startCall?.options).toEqual({ timeoutMs: 60_000 })
   })
 
-  it('passes an absolute artifact directory to export tools', async () => {
+  it('writes workspace inspection artifacts to the absolute case directory', async () => {
     const outputRootAbsolute = await fs.mkdtemp(path.join(os.tmpdir(), 'run-one-absolute-output-'))
     tempDirs.push(outputRootAbsolute)
     const outputRootRelative = path.relative(process.cwd(), outputRootAbsolute)
     const sleep = vi.fn(async (_delayMs: number) => {})
     const expectedArtifactDir = path.resolve(outputRootRelative, '20260327', '001-google-maps')
-    const client = new MockRegressionMcpClient(createSuccessResponses(expectedArtifactDir))
+    const client = new MockRegressionMcpClient(createSuccessResponses())
 
     const result = await runOneCase({
       client,
@@ -310,34 +314,60 @@ describe('runOneCase', () => {
     })
 
     expect(result.manifestEntry.runnerState).toBe('COMPLETED')
+    expect(result.caseRecord.dataPath).toBe(path.join(expectedArtifactDir, 'data.json'))
 
-    const exportCall = client.calls.find(
-      call => call.toolName === REGRESSION_MCP_TOOL_NAMES.SCRAPE_EXPORT_TO_FILE
-    )
-    const debugExportCall = client.calls.find(
-      call => call.toolName === REGRESSION_MCP_TOOL_NAMES.DEBUG_EXPORT_LOGS_TO_FILE
-    )
+    const dataArtifact = JSON.parse(
+      await fs.readFile(path.join(expectedArtifactDir, 'data.json'), 'utf8')
+    ) as RegressionJsonObject
 
-    expect(exportCall?.args).toEqual({
-      jobId: 'job-run-1',
-      outputDir: expectedArtifactDir,
-      fileName: 'data.json',
-      format: 'json',
-    })
-    expect(debugExportCall?.args).toEqual({
-      outputDir: expectedArtifactDir,
-      fileName: 'debug.log',
-      jobId: 'job-run-1',
+    expect(dataArtifact).toMatchObject({
+      job: {
+        jobId: 'job-run-1',
+        state: 'COMPLETED',
+      },
+      workspaceAssets: {
+        scope: 'current_thread',
+      },
+      inspectedAsset: {
+        file: {
+          fileName: 'rows.csv',
+        },
+      },
     })
   })
 
-  it('runs playwright pre-detect preparation before detectTables and records screenshot path', async () => {
+  it('classifies startScrape request timeouts as runtime failures', async () => {
+    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'run-one-start-timeout-'))
+    tempDirs.push(outputRoot)
+    const sleep = vi.fn(async (_delayMs: number) => {})
+    const responses = createSuccessResponses()
+    responses[REGRESSION_MCP_TOOL_NAMES.START_SCRAPE] = [new Error('MCP request timeout')]
+    const client = new MockRegressionMcpClient(responses)
+
+    const result = await runOneCase({
+      client,
+      testCase: createCase(),
+      outputRoot,
+      dateKey: '20260327',
+      maxRecords: 100,
+      timeoutMs: 60_000,
+      waitMs: 1_000,
+      dependencies: {
+        sleep,
+      },
+    })
+
+    expect(result.manifestEntry.runnerState).toBe('FAILED_RUNTIME')
+    expect(result.manifestEntry.errorMessage).toBe('MCP request timeout')
+  })
+
+  it('runs playwright pre-detect preparation before detectScrapeTargets and records screenshot path', async () => {
     const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'run-one-pre-detect-'))
     tempDirs.push(outputRoot)
     const sleep = vi.fn(async (_delayMs: number) => {})
     const caseDirPath = path.join(outputRoot, '20260327', '001-google-maps')
     const screenshotPath = path.join(caseDirPath, 'pre-detect.png')
-    const client = new MockRegressionMcpClient(createSuccessResponses(caseDirPath))
+    const client = new MockRegressionMcpClient(createSuccessResponses())
     const preDetectService = new MockRegressionPreDetectService({
       screenshotPath,
     })
@@ -363,16 +393,17 @@ describe('runOneCase', () => {
         caseDirPath,
       },
     ])
-    expect(client.calls.map(call => call.toolName)).not.toContain(
-      REGRESSION_MCP_TOOL_NAMES.BROWSER_OPEN_TAB
-    )
+    expect(client.calls[0]?.toolName).toBe(REGRESSION_MCP_TOOL_NAMES.OPEN_AI_WORKSPACE_TAB)
+    expect(client.calls[0]?.args).toEqual({
+      url: 'https://example.com/maps',
+      openMode: 'reuse_or_create',
+    })
 
     const detectCall = client.calls.find(
-      call => call.toolName === REGRESSION_MCP_TOOL_NAMES.SCRAPE_DETECT_TABLES
+      call => call.toolName === REGRESSION_MCP_TOOL_NAMES.DETECT_SCRAPE_TARGETS
     )
     expect(detectCall?.args).toEqual({
-      url: 'https://example.com/maps',
-      tabOpenMode: 'reuse_or_create',
+      tabId: 77,
       prompt: 'Extract rows.',
     })
     expect(result.caseRecord.preDetectScreenshotPath).toBe(screenshotPath)

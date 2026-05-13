@@ -10,17 +10,16 @@ const REGRESSION_MCP_CLIENT_NAME = 'regression-runner'
 const REGRESSION_MCP_CLIENT_VERSION = '1.0.0'
 
 export const REGRESSION_MCP_TOOL_NAMES = {
-  BROWSER_OPEN_TAB: 'browser_open_tab',
-  BROWSER_CLOSE_TAB: 'browser_close_tab',
-  DEBUG_CLEAR_LOGS: 'debug_clear_logs',
-  DEBUG_EXPORT_LOGS_TO_FILE: 'debug_export_logs_to_file',
-  SCRAPE_DETECT_TABLES: 'scrape_detect_tables',
-  SCRAPE_EXPORT_TO_FILE: 'scrape_export_to_file',
-  SCRAPE_GET_TABLE_TREE: 'scrape_get_table_tree',
-  SCRAPE_ANALYZE_COLUMNS: 'scrape_analyze_columns',
-  SCRAPE_START: 'scrape_start',
-  SCRAPE_STATUS: 'scrape_status',
-  SCRAPE_STOP: 'scrape_stop',
+  OPEN_AI_WORKSPACE_TAB: 'openAiWorkspaceTab',
+  READ_PAGE_A11Y_TREE: 'readPageA11yTree',
+  OPERATE_PAGE: 'operatePage',
+  DETECT_SCRAPE_TARGETS: 'detectScrapeTargets',
+  ANALYZE_SCRAPE_CONFIG: 'analyzeScrapeConfig',
+  APPLY_DRILL_DOWN_SCRAPE: 'applyDrillDownScrape',
+  START_SCRAPE: 'startScrape',
+  LIST_WORKSPACE_ASSETS: 'listWorkspaceAssets',
+  INSPECT_WORKSPACE_ASSET: 'inspectWorkspaceAsset',
+  RUN_DATA_CODE: 'runDataCode',
 } as const
 
 type RegressionMcpToolName =
@@ -28,7 +27,11 @@ type RegressionMcpToolName =
 
 export interface RegressionMcpToolClient {
   connect(): Promise<void>
-  callTool(toolName: RegressionMcpToolName, args: RegressionJsonObject): Promise<RegressionJsonValue>
+  callTool(
+    toolName: RegressionMcpToolName,
+    args: RegressionJsonObject,
+    options?: { timeoutMs?: number }
+  ): Promise<RegressionJsonValue>
   close(): Promise<void>
 }
 
@@ -94,12 +97,21 @@ export class RegressionMcpClient implements RegressionMcpToolClient {
 
   async callTool(
     toolName: RegressionMcpToolName,
-    args: RegressionJsonObject
+    args: RegressionJsonObject,
+    options: { timeoutMs?: number } = {}
   ): Promise<RegressionJsonValue> {
-    const result = (await this.client.callTool({
-      name: toolName,
-      arguments: args,
-    })) as ToolCallResult
+    const result = (await this.client.callTool(
+      {
+        name: toolName,
+        arguments: args,
+      },
+      undefined,
+      {
+        ...(options.timeoutMs
+          ? { maxTotalTimeout: options.timeoutMs, timeout: options.timeoutMs }
+          : {}),
+      }
+    )) as ToolCallResult
 
     return parseToolText(extractToolText(result))
   }

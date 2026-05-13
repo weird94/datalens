@@ -9,7 +9,14 @@ describe('CommandRouter', () => {
 
     try {
       const router = new CommandRouter(new ExtensionConnectionManager(), new JobStore())
-      const resultPromise = router.sendCommand('browser.list_tabs', {}, { requestId: 'req-1' })
+      const resultPromise = router.sendCommand(
+        'ai_tool.open_workspace_tab',
+        {
+          requestId: 'req-1',
+          url: 'https://example.com',
+        },
+        { requestId: 'req-1' }
+      )
       const assertion = expect(resultPromise).rejects.toThrow(
         'Bridge unavailable: extension not connected'
       )

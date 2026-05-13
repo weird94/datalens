@@ -1,4 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { nanoid } from 'nanoid'
 import { stringify } from 'yaml'
 import type { JsonObject } from '../bridge/protocol'
 import { ControlError } from '../daemon/control-protocol'
@@ -9,7 +10,13 @@ import {
 } from '../core/tool-registry'
 
 interface ProxyInvoker {
-  invokeTool: (sessionId: string, toolName: string, args: JsonObject) => Promise<ToolExecutionResult>
+  invokeTool: (
+    sessionId: string,
+    toolName: string,
+    args: JsonObject,
+    options?: { invocationId?: string }
+  ) => Promise<ToolExecutionResult>
+  cancelSession?: (sessionId: string, options?: { invocationId?: string }) => Promise<void>
 }
 
 function toTextResult(payload: JsonObject): { content: Array<{ type: 'text'; text: string }> } {
@@ -49,8 +56,12 @@ export class ProxyMcpHandler {
     private readonly sessionId: string
   ) {}
 
-  async invoke(toolName: string, rawArgs: JsonObject): Promise<ToolExecutionResult> {
-    return await this.proxyInvoker.invokeTool(this.sessionId, toolName, rawArgs)
+  async invoke(
+    toolName: string,
+    rawArgs: JsonObject,
+    options: { invocationId?: string } = {}
+  ): Promise<ToolExecutionResult> {
+    return await this.proxyInvoker.invokeTool(this.sessionId, toolName, rawArgs, options)
   }
 
   createServer(): McpServer {
@@ -66,9 +77,15 @@ export class ProxyMcpHandler {
           description: tool.description,
           inputSchema: tool.inputShape,
         },
-        async rawArgs => {
+        async (rawArgs, extra) => {
+          const invocationId = nanoid()
+          const cancelSession = () => {
+            void this.proxyInvoker.cancelSession?.(this.sessionId, { invocationId })
+          }
+          extra.signal.addEventListener('abort', cancelSession, { once: true })
+
           try {
-            const response = await this.invoke(tool.name, rawArgs as JsonObject)
+            const response = await this.invoke(tool.name, rawArgs as JsonObject, { invocationId })
             if (isToolTextResult(response)) {
               return toPlainTextResult(response.text)
             }
@@ -112,6 +129,8 @@ export class ProxyMcpHandler {
                 },
               ],
             }
+          } finally {
+            extra.signal.removeEventListener('abort', cancelSession)
           }
         }
       )

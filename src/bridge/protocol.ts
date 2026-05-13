@@ -23,23 +23,18 @@ export interface BridgeEnvelope<TPayload extends JsonObject = JsonObject> {
 }
 
 export type BridgeCommandName =
-  | 'browser.open_tab'
-  | 'browser.list_tabs'
-  | 'browser.use_tab'
-  | 'browser.close_tab'
-  | 'debug.get_logs'
-  | 'debug.clear_logs'
-  | 'scrape.detect_tables'
-  | 'scrape.get_table_tree'
-  | 'scrape.click_expand_and_redetect'
-  | 'scrape.analyze_columns'
-  | 'scrape.start'
-  | 'scrape.status'
-  | 'scrape.pause'
-  | 'scrape.resume'
-  | 'scrape.stop'
-  | 'scrape.result'
-  | 'scrape.export'
+  | 'ai_tool.open_workspace_tab'
+  | 'ai_tool.read_page_a11y_tree'
+  | 'ai_tool.operate_page'
+  | 'ai_tool.detect_scrape_targets'
+  | 'ai_tool.analyze_scrape_config'
+  | 'ai_tool.apply_drill_down_scrape'
+  | 'ai_tool.start_scrape'
+  | 'ai_tool.get_scrape_job_status'
+  | 'ai_tool.stop_scrape'
+  | 'data_workbench.list_workspace_assets'
+  | 'data_workbench.inspect_workspace_asset'
+  | 'data_workbench.run_data_code'
 
 export interface BridgeErrorPayload extends JsonObject {
   code: string

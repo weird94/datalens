@@ -15,8 +15,10 @@ export async function bootstrapDaemonRuntime(): Promise<DaemonRuntime> {
       port: getDaemonControlPort(),
     },
     {
-      invokeTool: async (toolName, args, sessionId) =>
-        await sharedRuntime.toolExecutor.invoke(toolName, args, sessionId),
+      invokeTool: async (toolName, args, sessionId, abortSignal) =>
+        await sharedRuntime.toolExecutor.invoke(toolName, args, sessionId, {
+          ...(abortSignal ? { abortSignal } : {}),
+        }),
       closeSession: sessionId => {
         sharedRuntime.toolExecutor.clearSession(sessionId)
       },

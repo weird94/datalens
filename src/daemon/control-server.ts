@@ -1,10 +1,12 @@
 import { createServer, type Server, type Socket } from 'node:net'
+import { nanoid } from 'nanoid'
 import type { JsonObject } from '../bridge/protocol'
 import type { ToolExecutionResult } from '../core/tool-registry'
 import {
   CONTROL_ERROR_CODE_INTERNAL_ERROR,
   CONTROL_ERROR_CODE_INVALID_REQUEST,
   ControlError,
+  createCancelSessionResponse,
   createCloseSessionResponse,
   createErrorResponse,
   createHealthResponse,
@@ -21,7 +23,8 @@ interface ControlServerHandler {
   invokeTool: (
     toolName: string,
     args: JsonObject,
-    sessionId: string
+    sessionId: string,
+    abortSignal?: AbortSignal
   ) => Promise<ToolExecutionResult>
   closeSession: (sessionId: string) => void
 }
@@ -32,6 +35,10 @@ function writeJsonLine(socket: Socket, payload: object): void {
 
 export class ControlServer {
   private server: Server | null = null
+  private readonly activeInvocationAbortControllers = new Map<string, {
+    abortController: AbortController
+    sessionId: string
+  }>()
 
   constructor(
     private readonly options: ControlServerOptions,
@@ -62,6 +69,10 @@ export class ControlServer {
 
     const activeServer = this.server
     this.server = null
+    this.activeInvocationAbortControllers.forEach(activeInvocation => {
+      activeInvocation.abortController.abort()
+    })
+    this.activeInvocationAbortControllers.clear()
 
     await new Promise<void>((resolve, reject) => {
       activeServer.close(error => {
@@ -103,14 +114,62 @@ export class ControlServer {
       }
 
       if (request.kind === 'invokeTool') {
-        const payload = await this.handler.invokeTool(request.toolName, request.args, request.sessionId)
-        writeJsonLine(socket, createInvokeToolResponse(payload))
+        const abortController = new AbortController()
+        const invocationId = request.invocationId ?? nanoid()
+        this.activeInvocationAbortControllers.set(invocationId, {
+          abortController,
+          sessionId: request.sessionId,
+        })
+
+        try {
+          const payload = await this.handler.invokeTool(
+            request.toolName,
+            request.args,
+            request.sessionId,
+            abortController.signal
+          )
+          writeJsonLine(socket, createInvokeToolResponse(payload))
+        } finally {
+          if (
+            this.activeInvocationAbortControllers.get(invocationId)?.abortController ===
+            abortController
+          ) {
+            this.activeInvocationAbortControllers.delete(invocationId)
+          }
+        }
         socket.end()
         return
       }
 
-      this.handler.closeSession(request.sessionId)
-      writeJsonLine(socket, createCloseSessionResponse())
+      if (request.kind === 'cancelSession') {
+        if (request.invocationId) {
+          this.activeInvocationAbortControllers
+            .get(request.invocationId)
+            ?.abortController.abort()
+        } else {
+          this.abortSessionInvocations(request.sessionId)
+        }
+        writeJsonLine(socket, createCancelSessionResponse())
+        socket.end()
+        return
+      }
+
+      if (request.kind === 'closeSession') {
+        this.abortSessionInvocations(request.sessionId)
+        this.handler.closeSession(request.sessionId)
+        writeJsonLine(socket, createCloseSessionResponse())
+        socket.end()
+        return
+      }
+
+      writeJsonLine(
+        socket,
+        createErrorResponse({
+          code: CONTROL_ERROR_CODE_INVALID_REQUEST,
+          message: 'Unsupported control request kind',
+          retriable: false,
+        })
+      )
       socket.end()
     } catch (error) {
       if (error instanceof ControlError) {
@@ -149,5 +208,16 @@ export class ControlServer {
       )
       socket.end()
     }
+  }
+
+  private abortSessionInvocations(sessionId: string): void {
+    this.activeInvocationAbortControllers.forEach((activeInvocation, invocationId) => {
+      if (activeInvocation.sessionId !== sessionId) {
+        return
+      }
+
+      activeInvocation.abortController.abort()
+      this.activeInvocationAbortControllers.delete(invocationId)
+    })
   }
 }

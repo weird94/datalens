@@ -143,14 +143,14 @@ async function main(): Promise<void> {
   const args = parseCliArgs(process.argv.slice(2))
   const rows = await loadCases(args.csvPath)
   const outputDateDir = buildDateOutputDir(args.outputRoot, args.dateKey)
-  const client = new RegressionMcpClient()
   const preDetectService = new PlaywrightRegressionPreDetectService()
-  await client.connect()
 
-  try {
-    if (args.mode === REGRESSION_RUNNER_MODES.ONE) {
-      const testCase = findCaseByNumber(rows, args.rowNumber || 1)
-      const result = await runOneCase({
+  async function runCaseWithFreshClient(testCase: RegressionCaseRow) {
+    const client = new RegressionMcpClient()
+    await client.connect()
+
+    try {
+      return await runOneCase({
         client,
         testCase,
         outputRoot: args.outputRoot,
@@ -160,79 +160,75 @@ async function main(): Promise<void> {
         waitMs: args.waitMs,
         preDetectService,
       })
-      console.log(
-        JSON.stringify(
-          {
-            mode: args.mode,
-            outputDateDir,
-            result: result.manifestEntry,
-          },
-          null,
-          2
-        )
-      )
-      return
+    } finally {
+      await client.close()
     }
+  }
 
-    const selectedCases = selectBatchCases(rows, {
-      limit: args.batchLimit,
-      priorities: [args.batchPriority],
-    })
-    const manifest: RegressionManifest = {
-      startedAt: new Date().toISOString(),
-      csvPath: args.csvPath,
-      outputRoot: args.outputRoot,
-      dateKey: args.dateKey,
-      maxRecords: args.maxRecords,
-      caseLimit: args.batchLimit,
-      cases: [],
-    }
-
-    await writeManifestFile(args.outputRoot, args.dateKey, manifest)
-
-    const entries = await runBatch({
-      cases: selectedCases,
-      runOneCase: async testCase => {
-        const result = await runOneCase({
-          client,
-          testCase,
-          outputRoot: args.outputRoot,
-          dateKey: args.dateKey,
-          maxRecords: args.maxRecords,
-          timeoutMs: args.timeoutMs,
-          waitMs: args.waitMs,
-          preDetectService,
-        })
-        return result.manifestEntry
-      },
-      persistManifest: async entriesToPersist => {
-        await writeManifestFile(args.outputRoot, args.dateKey, {
-          ...manifest,
-          cases: entriesToPersist,
-        })
-      },
-    })
-
-    await writeManifestFile(args.outputRoot, args.dateKey, {
-      ...manifest,
-      finishedAt: new Date().toISOString(),
-      cases: entries,
-    })
-
+  if (args.mode === REGRESSION_RUNNER_MODES.ONE) {
+    const testCase = findCaseByNumber(rows, args.rowNumber || 1)
+    const result = await runCaseWithFreshClient(testCase)
     console.log(
       JSON.stringify(
         {
           mode: args.mode,
           outputDateDir,
-          cases: entries,
+          result: result.manifestEntry,
         },
         null,
         2
       )
     )
-  } finally {
-    await client.close()
+    return
   }
+
+  const selectedCases = selectBatchCases(rows, {
+    limit: args.batchLimit,
+    priorities: [args.batchPriority],
+  })
+  const manifest: RegressionManifest = {
+    startedAt: new Date().toISOString(),
+    csvPath: args.csvPath,
+    outputRoot: args.outputRoot,
+    dateKey: args.dateKey,
+    maxRecords: args.maxRecords,
+    caseLimit: args.batchLimit,
+    cases: [],
+  }
+
+  await writeManifestFile(args.outputRoot, args.dateKey, manifest)
+
+  const entries = await runBatch({
+    cases: selectedCases,
+    runOneCase: async testCase => {
+      const result = await runCaseWithFreshClient(testCase)
+      return result.manifestEntry
+    },
+    persistManifest: async entriesToPersist => {
+      await writeManifestFile(args.outputRoot, args.dateKey, {
+        ...manifest,
+        cases: entriesToPersist,
+      })
+    },
+  })
+
+  await writeManifestFile(args.outputRoot, args.dateKey, {
+    ...manifest,
+    finishedAt: new Date().toISOString(),
+    cases: entries,
+  })
+
+  console.log(
+    JSON.stringify(
+      {
+        mode: args.mode,
+        outputDateDir,
+        cases: entries,
+      },
+      null,
+      2
+    )
+  )
 }
 
 void main().catch(error => {

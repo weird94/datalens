@@ -106,10 +106,6 @@ export interface RegressionScrapeStatusResult extends RegressionJsonObject {
   job: RegressionScrapeStatusJob
 }
 
-export interface RegressionExportToFileResult extends RegressionJsonObject {
-  filePath: string
-}
-
 export interface RegressionCaseResult {
   manifestEntry: RegressionManifestCaseEntry
   caseDirPath: string

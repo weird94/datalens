@@ -66,7 +66,10 @@ export class McpHandler {
             const response = await this.toolExecutor.invoke(
               tool.name,
               rawArgs as JsonObject,
-              extra.sessionId
+              extra.sessionId,
+              {
+                abortSignal: extra.signal,
+              }
             )
 
             logger.info('Tool call completed', {

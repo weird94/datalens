@@ -89,13 +89,18 @@ describe('ControlServer', () => {
       port,
     })
 
-    const result = await client.invokeTool('session-a', 'scrape_start', {
+    const result = await client.invokeTool('session-a', 'startScrape', {
       scraperConfig: {},
     })
 
-    expect(invokeTool).toHaveBeenCalledWith('scrape_start', {
-      scraperConfig: {},
-    }, 'session-a')
+    expect(invokeTool).toHaveBeenCalledWith(
+      'startScrape',
+      {
+        scraperConfig: {},
+      },
+      'session-a',
+      expect.any(AbortSignal)
+    )
     expect(result).toEqual({
       status: 'ok',
       jobId: 'job-1',
@@ -126,5 +131,123 @@ describe('ControlServer', () => {
     await client.closeSession('session-a')
 
     expect(closeSession).toHaveBeenCalledWith('session-a')
+  })
+
+  it('aborts an active invocation when the proxy cancels the session', async () => {
+    const port = await getAvailablePort()
+    let activeSignal: AbortSignal | null = null
+    let releaseInvoke: (() => void) | null = null
+    const invokeTool = vi.fn(
+      async (_toolName: string, _args: object, _sessionId: string, abortSignal?: AbortSignal) => {
+        activeSignal = abortSignal ?? null
+        await new Promise<void>(resolve => {
+          releaseInvoke = resolve
+        })
+        return { ok: true }
+      }
+    )
+    const server = new ControlServer(
+      {
+        host: '127.0.0.1',
+        port,
+      },
+      {
+        invokeTool,
+        closeSession: () => {},
+      }
+    )
+    serversToStop.push(server)
+    await server.start()
+
+    const client = new ControlClient({
+      host: '127.0.0.1',
+      port,
+    })
+    const invokePromise = client.invokeTool('session-a', 'startScrape', {}, {
+      invocationId: 'invoke-a',
+    })
+
+    while (!activeSignal) {
+      await new Promise(resolve => {
+        setTimeout(resolve, 0)
+      })
+    }
+
+    await client.cancelSession('session-a', { invocationId: 'invoke-a' })
+    const signal = activeSignal as AbortSignal | null
+    if (!signal) {
+      throw new Error('Expected active abort signal')
+    }
+    expect(signal.aborted).toBe(true)
+
+    const release = releaseInvoke as (() => void) | null
+    if (!release) {
+      throw new Error('Expected active invoke release callback')
+    }
+    release()
+    await expect(invokePromise).resolves.toEqual({ ok: true })
+  })
+
+  it('cancels only the matching active invocation in a session', async () => {
+    const port = await getAvailablePort()
+    const activeSignals = new Map<string, AbortSignal>()
+    const releaseCallbacks = new Map<string, () => void>()
+    const invokeTool = vi.fn(
+      async (_toolName: string, args: { label?: string }, _sessionId: string, abortSignal?: AbortSignal) => {
+        const label = args.label
+        if (!label || !abortSignal) {
+          throw new Error('Expected labeled invocation')
+        }
+        activeSignals.set(label, abortSignal)
+        await new Promise<void>(resolve => {
+          releaseCallbacks.set(label, resolve)
+        })
+        return { ok: true, label }
+      }
+    )
+    const server = new ControlServer(
+      {
+        host: '127.0.0.1',
+        port,
+      },
+      {
+        invokeTool: invokeTool as never,
+        closeSession: () => {},
+      }
+    )
+    serversToStop.push(server)
+    await server.start()
+
+    const client = new ControlClient({
+      host: '127.0.0.1',
+      port,
+    })
+    const firstInvoke = client.invokeTool(
+      'session-a',
+      'startScrape',
+      { label: 'first' },
+      { invocationId: 'invoke-first' }
+    )
+    const secondInvoke = client.invokeTool(
+      'session-a',
+      'startScrape',
+      { label: 'second' },
+      { invocationId: 'invoke-second' }
+    )
+
+    while (!activeSignals.has('first') || !activeSignals.has('second')) {
+      await new Promise(resolve => {
+        setTimeout(resolve, 0)
+      })
+    }
+
+    await client.cancelSession('session-a', { invocationId: 'invoke-first' })
+    expect(activeSignals.get('first')?.aborted).toBe(true)
+    expect(activeSignals.get('second')?.aborted).toBe(false)
+
+    releaseCallbacks.get('first')?.()
+    releaseCallbacks.get('second')?.()
+    await expect(firstInvoke).resolves.toEqual({ ok: true, label: 'first' })
+    await expect(secondInvoke).resolves.toEqual({ ok: true, label: 'second' })
   })
 })

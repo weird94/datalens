@@ -1,6 +1,6 @@
-# DataLens Skill
+# DataLens MCP Server
 
-An agent skill that teaches AI coding agents how to use [DataLens](https://datalens.uk) to scrape structured data from any website open in Chrome.
+MCP access to the same 10 frontend tools used by the DataLens chat page.
 
 ## Install
 
@@ -8,22 +8,26 @@ An agent skill that teaches AI coding agents how to use [DataLens](https://datal
 npx skills add weird94/datalens --skill datalens
 ```
 
-## What It Does
+## Exposed Tools
 
-Once installed, your agent will know how to:
+The default tool list is intentionally identical to the chat UI tool set:
 
-- Detect scrapable tables and lists on any webpage
-- Analyze and auto-configure column schemas via AI
-- Start, monitor, pause, resume, and stop scraping jobs
-- Export results as JSON, CSV, or XLSX
-- Handle nested/tree data with expand-button automation
-- Manage browser tabs for multi-page workflows
+- `openAiWorkspaceTab`
+- `readPageA11yTree`
+- `operatePage`
+- `detectScrapeTargets`
+- `analyzeScrapeConfig`
+- `applyDrillDownScrape`
+- `startScrape`
+- `listWorkspaceAssets`
+- `inspectWorkspaceAsset`
+- `runDataCode`
 
 ## Requirements
 
 1. [`datalens-mcp-server`](https://www.npmjs.com/package/datalens-mcp-server) installed globally or available via `npx`
 2. DataLens Chrome extension installed and active
-3. Chrome open with the target page loaded
+3. DataLens extension signed in, for data workspace tools
 4. Node.js ≥ 18
 
 ## Usage
@@ -32,4 +36,6 @@ After installing the skill, just ask your agent:
 
 > "Scrape the product list from this page: https://example.com/products"
 
-The agent will follow the guided workflow: detect → analyze → preview → export.
+The core flow is `openAiWorkspaceTab` → `detectScrapeTargets` → `analyzeScrapeConfig` → `startScrape`.
+Scrape outputs are saved to the DataLens workspace and can be checked with `listWorkspaceAssets`,
+`inspectWorkspaceAsset`, and `runDataCode`.

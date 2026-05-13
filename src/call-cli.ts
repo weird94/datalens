@@ -13,9 +13,9 @@
  *   npx datalens-mcp-server call <tool_name> [args_json]   (via datalens-mcp-call alias)
  *
  * Examples:
- *   datalens-mcp-call scrape_detect_tables '{"url":"https://example.com"}'
- *   datalens-mcp-call browser_list_tabs
- *   datalens-mcp-call scrape_status '{"jobId":"abc123"}'
+ *   datalens-mcp-call openAiWorkspaceTab '{"url":"https://example.com"}'
+ *   datalens-mcp-call detectScrapeTargets '{"tabId":123,"prompt":"product cards"}'
+ *   datalens-mcp-call startScrape '{"jobId":"abc123","maxRecords":20}'
  *
  * Requires:
  *   - DataLens Chrome extension installed and Chrome open
@@ -40,7 +40,7 @@ const timeoutMs = parseInt(process.env.DATALENS_TIMEOUT ?? '120000', 10)
 
 if (!toolName) {
   console.error('Usage: datalens-mcp-call <tool_name> [args_json]')
-  console.error('Example: datalens-mcp-call scrape_detect_tables \'{"url":"https://example.com"}\'')
+  console.error('Example: datalens-mcp-call openAiWorkspaceTab \'{"url":"https://example.com"}\'')
   process.exit(1)
 }
 

@@ -17,7 +17,6 @@ import {
   type RegressionCaseResult,
   type RegressionCaseRow,
   type RegressionDetectTablesResult,
-  type RegressionExportToFileResult,
   type RegressionJsonObject,
   type RegressionJsonValue,
   type RegressionRunnerState,
@@ -29,6 +28,7 @@ const REGRESSION_JOB_STATES = {
   CANCELED: 'CANCELED',
   COMPLETED: 'COMPLETED',
   ERROR: 'ERROR',
+  STOPPED: 'STOPPED',
 } as const
 
 const REGRESSION_TAB_OPEN_MODE_VALUES = {
@@ -37,6 +37,7 @@ const REGRESSION_TAB_OPEN_MODE_VALUES = {
 } as const
 
 const REGRESSION_INITIAL_PAGE_SETTLE_MS = 30_000
+const REGRESSION_WORKSPACE_INSPECT_SAMPLE_LIMIT = 50
 
 function readObject(value: RegressionJsonValue | undefined, label: string): RegressionJsonObject {
   if (!value || Array.isArray(value) || typeof value !== 'object') {
@@ -64,19 +65,6 @@ function readNumber(value: RegressionJsonValue | undefined, label: string): numb
   }
 
   return value
-}
-
-function readStatusResult(value: RegressionJsonValue): RegressionScrapeStatusResult {
-  const objectValue = readObject(value, 'scrape status response')
-  const job = readObject(objectValue.job, 'scrape status job')
-  return {
-    job: {
-      ...job,
-      jobId: readString(job.jobId, 'scrape status jobId'),
-      state: readString(job.state, 'scrape status state'),
-      ...(job.error ? { error: readObject(job.error, 'scrape status error') } : {}),
-    },
-  }
 }
 
 interface RegressionBrowserOpenTabResult {
@@ -107,40 +95,40 @@ function readBrowserOpenTabResult(value: RegressionJsonValue): RegressionBrowser
 }
 
 function readDetectTablesResult(value: RegressionJsonValue): RegressionDetectTablesResult {
-  const objectValue = readObject(value, 'detect tables response')
-  const tablesValue = objectValue.tables
-  if (!Array.isArray(tablesValue)) {
-    throw new Error('Invalid detect tables response: tables must be an array')
+  const objectValue = readObject(value, 'detect scrape targets response')
+  const targetsValue = objectValue.targets
+  if (!Array.isArray(targetsValue)) {
+    throw new Error('Invalid detect scrape targets response: targets must be an array')
   }
 
   return {
-    tables: tablesValue.map(item => {
-      const table = readObject(item, 'detected table')
-      const itemRows = table.itemRows
+    tables: targetsValue.map(item => {
+      const target = readObject(item, 'detected scrape target')
+      const itemRows = target.itemRows
       if (!Array.isArray(itemRows)) {
-        throw new Error('Invalid detect tables response: itemRows must be an array')
+        throw new Error('Invalid detect scrape targets response: itemRows must be an array')
       }
 
       return {
-        index: readNumber(table.index, 'detected table index'),
-        ...(readOptionalString(table.name) ? { name: readOptionalString(table.name) } : {}),
-        itemSelector: readString(table.itemSelector, 'detected table itemSelector'),
-        itemCount: readNumber(table.itemCount, 'detected table itemCount'),
-        ...(readOptionalString(table.rootSelector)
-          ? { rootSelector: readOptionalString(table.rootSelector) }
+        index: readNumber(target.index, 'detected scrape target index'),
+        ...(readOptionalString(target.name) ? { name: readOptionalString(target.name) } : {}),
+        itemSelector: readString(target.itemSelector, 'detected scrape target itemSelector'),
+        itemCount: readNumber(target.itemCount, 'detected scrape target itemCount'),
+        ...(readOptionalString(target.rootSelector)
+          ? { rootSelector: readOptionalString(target.rootSelector) }
           : {}),
-        ...(readOptionalString(table.documentInfoPath)
-          ? { documentInfoPath: readOptionalString(table.documentInfoPath) }
+        ...(readOptionalString(target.documentInfoPath)
+          ? { documentInfoPath: readOptionalString(target.documentInfoPath) }
           : {}),
-        itemRows: itemRows.map(row => readString(row, 'detected table row')),
+        itemRows: itemRows.map(row => readString(row, 'detected scrape target row')),
       }
     }),
-    tabId: readNumber(objectValue.tabId, 'detect tables tabId'),
-    url: readString(objectValue.url, 'detect tables url'),
-    title: readString(objectValue.title, 'detect tables title'),
+    tabId: readNumber(objectValue.tabId, 'detect scrape targets tabId'),
+    url: readString(objectValue.url, 'detect scrape targets url'),
+    title: readString(objectValue.title, 'detect scrape targets title'),
     selectedTableIndex: readNumber(
-      objectValue.selectedTableIndex,
-      'detect tables selectedTableIndex'
+      objectValue.selectedTargetIndex,
+      'detect scrape targets selectedTargetIndex'
     ),
     ...(typeof objectValue.selectionConfidence === 'number'
       ? { selectionConfidence: objectValue.selectionConfidence }
@@ -175,19 +163,30 @@ function readStartResult(value: RegressionJsonValue): RegressionScrapeStartResul
   }
 }
 
-function readExportResult(value: RegressionJsonValue): RegressionExportToFileResult {
-  const objectValue = readObject(value, 'export result')
-  return {
-    ...objectValue,
-    filePath: readString(objectValue.filePath, 'export filePath'),
+function readFirstWorkspaceFileName(value: RegressionJsonValue): string | undefined {
+  const objectValue = readObject(value, 'workspace assets response')
+  const filesValue = objectValue.files
+  if (!Array.isArray(filesValue)) {
+    return undefined
   }
+
+  for (const item of filesValue) {
+    const file = readObject(item, 'workspace file')
+    const fileName = readOptionalString(file.fileName)
+    if (fileName) {
+      return fileName
+    }
+  }
+
+  return undefined
 }
 
 function isTerminalJobState(state: string): boolean {
   return (
     state === REGRESSION_JOB_STATES.COMPLETED ||
     state === REGRESSION_JOB_STATES.ERROR ||
-    state === REGRESSION_JOB_STATES.CANCELED
+    state === REGRESSION_JOB_STATES.CANCELED ||
+    state === REGRESSION_JOB_STATES.STOPPED
   )
 }
 
@@ -222,12 +221,10 @@ export async function runOneCase(input: RunOneCaseInput): Promise<RegressionCase
   let errorMessage: string | undefined
   let lastStatus: RegressionScrapeStatusResult | null = null
   let exportedDataPath: string | undefined
-  let exportedLogPath: string | undefined
   let preDetectArtifact: RegressionPreDetectArtifact | null = null
   const sleep = input.dependencies?.sleep ?? waitForMs
 
   await ensureDirectory(caseDirPath)
-  await input.client.callTool(REGRESSION_MCP_TOOL_NAMES.DEBUG_CLEAR_LOGS, {})
 
   try {
     if (input.preDetectService) {
@@ -237,33 +234,26 @@ export async function runOneCase(input: RunOneCaseInput): Promise<RegressionCase
       })
     }
 
-    if (!preDetectArtifact) {
-      const openTabResult = readBrowserOpenTabResult(
-        await input.client.callTool(REGRESSION_MCP_TOOL_NAMES.BROWSER_OPEN_TAB, {
-          url: input.testCase.url,
-          openMode: REGRESSION_TAB_OPEN_MODE_VALUES.CREATE_NEW,
-        })
-      )
-      caseTabId = openTabResult.tab.id
-      await sleep(REGRESSION_INITIAL_PAGE_SETTLE_MS)
-    }
+    const openTabResult = readBrowserOpenTabResult(
+      await input.client.callTool(REGRESSION_MCP_TOOL_NAMES.OPEN_AI_WORKSPACE_TAB, {
+        url: preDetectArtifact?.resolvedUrl || input.testCase.url,
+        openMode: preDetectArtifact
+          ? REGRESSION_TAB_OPEN_MODE_VALUES.REUSE_OR_CREATE
+          : REGRESSION_TAB_OPEN_MODE_VALUES.CREATE_NEW,
+      })
+    )
+    caseTabId = openTabResult.tab.id
+    await sleep(REGRESSION_INITIAL_PAGE_SETTLE_MS)
 
     const detectResult = readDetectTablesResult(
-      await input.client.callTool(REGRESSION_MCP_TOOL_NAMES.SCRAPE_DETECT_TABLES, {
-        ...(preDetectArtifact
-          ? {
-              url: preDetectArtifact.resolvedUrl || input.testCase.url,
-              tabOpenMode: REGRESSION_TAB_OPEN_MODE_VALUES.REUSE_OR_CREATE,
-            }
-          : {
-              tabId: caseTabId,
-            }),
+      await input.client.callTool(REGRESSION_MCP_TOOL_NAMES.DETECT_SCRAPE_TARGETS, {
+        tabId: caseTabId,
         ...(normalizedPrompt ? { prompt: normalizedPrompt } : {}),
       })
     )
     caseTabId = detectResult.tabId
     await writeJsonFile(
-      path.join(caseDirPath, REGRESSION_ARTIFACT_FILE_NAMES.DETECT_TABLES_JSON),
+      path.join(caseDirPath, REGRESSION_ARTIFACT_FILE_NAMES.DETECT_TARGETS_JSON),
       detectResult
     )
 
@@ -275,7 +265,7 @@ export async function runOneCase(input: RunOneCaseInput): Promise<RegressionCase
       !selectedTable.rootSelector ||
       !selectedTable.documentInfoPath
     ) {
-      throw new Error('detectTables did not return a valid selected table')
+      throw new Error('detectScrapeTargets did not return a valid selected target')
     }
 
     await writeJsonFile(
@@ -283,8 +273,9 @@ export async function runOneCase(input: RunOneCaseInput): Promise<RegressionCase
       selectedTable
     )
 
-    const treeResult = await input.client.callTool(REGRESSION_MCP_TOOL_NAMES.SCRAPE_GET_TABLE_TREE, {
+    const treeResult = await input.client.callTool(REGRESSION_MCP_TOOL_NAMES.READ_PAGE_A11Y_TREE, {
       tabId: detectResult.tabId,
+      scope: 'target',
       rootSelector: selectedTable.rootSelector,
       itemSelector: selectedTable.itemSelector,
       documentInfoPath: selectedTable.documentInfoPath,
@@ -295,7 +286,7 @@ export async function runOneCase(input: RunOneCaseInput): Promise<RegressionCase
     )
 
     const analyzedColumns = readAnalyzeColumnsResult(
-      await input.client.callTool(REGRESSION_MCP_TOOL_NAMES.SCRAPE_ANALYZE_COLUMNS, {
+      await input.client.callTool(REGRESSION_MCP_TOOL_NAMES.ANALYZE_SCRAPE_CONFIG, {
         tabId: detectResult.tabId,
         ...(normalizedPrompt ? { prompt: normalizedPrompt } : {}),
         rootSelector: selectedTable.rootSelector,
@@ -309,52 +300,51 @@ export async function runOneCase(input: RunOneCaseInput): Promise<RegressionCase
     )
 
     const startResult = readStartResult(
-      await input.client.callTool(REGRESSION_MCP_TOOL_NAMES.SCRAPE_START, {
-        jobDraft: analyzedColumns.jobDraft,
-        maxRecords: input.maxRecords,
-      })
+      await input.client.callTool(
+        REGRESSION_MCP_TOOL_NAMES.START_SCRAPE,
+        {
+          jobId: analyzedColumns.jobId,
+          maxRecords: input.maxRecords,
+        },
+        {
+          timeoutMs: input.timeoutMs,
+        }
+      )
     )
     jobId = startResult.job.jobId
     jobState = startResult.job.state
 
-    const deadline = Date.now() + input.timeoutMs
-    while (Date.now() <= deadline) {
-      lastStatus = readStatusResult(
-        await input.client.callTool(REGRESSION_MCP_TOOL_NAMES.SCRAPE_STATUS, {
-          jobId,
-          waitMs: input.waitMs,
-        })
-      )
-      jobState = lastStatus.job.state
-
-      if (isTerminalJobState(jobState)) {
-        break
-      }
-    }
-
-    if (!lastStatus || !jobState) {
-      throw new Error('scrape_status did not return a job state')
+    lastStatus = {
+      job: startResult.job,
     }
 
     if (!isTerminalJobState(jobState)) {
       runnerState = REGRESSION_RUNNER_STATES.FAILED_RUNTIME
       errorMessage = `Scrape job timed out in state ${jobState}`
-      await input.client.callTool(REGRESSION_MCP_TOOL_NAMES.SCRAPE_STOP, { jobId })
     } else if (jobState !== REGRESSION_JOB_STATES.COMPLETED) {
       runnerState = REGRESSION_RUNNER_STATES.FAILED_RUNTIME
       errorMessage = readOptionalString(lastStatus.job.error?.message) || `Scrape ended in ${jobState}`
     }
 
     try {
-      const exportResult = readExportResult(
-        await input.client.callTool(REGRESSION_MCP_TOOL_NAMES.SCRAPE_EXPORT_TO_FILE, {
-          jobId,
-          outputDir: caseDirPath,
-          fileName: REGRESSION_ARTIFACT_FILE_NAMES.DATA_JSON,
-          format: 'json',
-        })
+      const workspaceAssets = await input.client.callTool(
+        REGRESSION_MCP_TOOL_NAMES.LIST_WORKSPACE_ASSETS,
+        {}
       )
-      exportedDataPath = exportResult.filePath
+      const firstFileName = readFirstWorkspaceFileName(workspaceAssets)
+      const inspectedAsset = firstFileName
+        ? await input.client.callTool(REGRESSION_MCP_TOOL_NAMES.INSPECT_WORKSPACE_ASSET, {
+            fileName: firstFileName,
+            inspectLevel: 'sample',
+            sampleLimit: REGRESSION_WORKSPACE_INSPECT_SAMPLE_LIMIT,
+          })
+        : undefined
+      exportedDataPath = path.join(caseDirPath, REGRESSION_ARTIFACT_FILE_NAMES.DATA_JSON)
+      await writeJsonFile(exportedDataPath, {
+        job: startResult.job,
+        workspaceAssets,
+        ...(inspectedAsset ? { inspectedAsset } : {}),
+      })
     } catch (error) {
       if (runnerState === REGRESSION_RUNNER_STATES.COMPLETED) {
         runnerState = REGRESSION_RUNNER_STATES.FAILED_EXPORT
@@ -368,37 +358,10 @@ export async function runOneCase(input: RunOneCaseInput): Promise<RegressionCase
 
     if (jobId) {
       runnerState = REGRESSION_RUNNER_STATES.FAILED_RUNTIME
+    } else if (errorMessage.toLowerCase().includes('timeout')) {
+      runnerState = REGRESSION_RUNNER_STATES.FAILED_RUNTIME
     } else {
       runnerState = REGRESSION_RUNNER_STATES.FAILED_DETECT
-    }
-  } finally {
-    try {
-      const logExportResult = readExportResult(
-        await input.client.callTool(REGRESSION_MCP_TOOL_NAMES.DEBUG_EXPORT_LOGS_TO_FILE, {
-          outputDir: caseDirPath,
-          fileName: REGRESSION_ARTIFACT_FILE_NAMES.DEBUG_LOG,
-          ...(jobId ? { jobId } : {}),
-        })
-      )
-      exportedLogPath = logExportResult.filePath
-    } catch (error) {
-      if (runnerState === REGRESSION_RUNNER_STATES.COMPLETED) {
-        runnerState = REGRESSION_RUNNER_STATES.FAILED_EXPORT
-        errorMessage = error instanceof Error ? error.message : String(error)
-      }
-    }
-
-    if (caseTabId !== undefined) {
-      try {
-        await input.client.callTool(REGRESSION_MCP_TOOL_NAMES.BROWSER_CLOSE_TAB, {
-          tabId: caseTabId,
-        })
-      } catch (error) {
-        if (runnerState === REGRESSION_RUNNER_STATES.COMPLETED) {
-          runnerState = REGRESSION_RUNNER_STATES.FAILED_EXPORT
-          errorMessage = error instanceof Error ? error.message : String(error)
-        }
-      }
     }
   }
 
@@ -415,7 +378,6 @@ export async function runOneCase(input: RunOneCaseInput): Promise<RegressionCase
     ...(jobState ? { jobState } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(exportedDataPath ? { dataPath: exportedDataPath } : {}),
-    ...(exportedLogPath ? { logPath: exportedLogPath } : {}),
     ...(preDetectArtifact?.screenshotPath
       ? { preDetectScreenshotPath: preDetectArtifact.screenshotPath }
       : {}),

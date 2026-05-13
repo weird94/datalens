@@ -5,8 +5,7 @@ import type { RegressionCaseRow, RegressionJsonValue, RegressionManifest } from 
 export const REGRESSION_ARTIFACT_FILE_NAMES = {
   CASE_JSON: 'case.json',
   DATA_JSON: 'data.json',
-  DEBUG_LOG: 'debug.log',
-  DETECT_TABLES_JSON: 'detect-tables.json',
+  DETECT_TARGETS_JSON: 'detect-targets.json',
   DOM_TREE_JSON: 'dom-tree.json',
   PRE_DETECT_SCREENSHOT_PNG: 'pre-detect.png',
   RUN_MANIFEST_JSON: 'run-manifest.json',

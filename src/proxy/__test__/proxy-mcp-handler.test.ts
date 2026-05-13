@@ -17,9 +17,9 @@ describe('ProxyMcpHandler', () => {
       'session-a'
     )
 
-    const result = await handler.invoke('browser_list_tabs', {})
+    const result = await handler.invoke('listWorkspaceAssets', {})
 
-    expect(invokeTool).toHaveBeenCalledWith('session-a', 'browser_list_tabs', {})
+    expect(invokeTool).toHaveBeenCalledWith('session-a', 'listWorkspaceAssets', {}, {})
     expect(result).toEqual({
       status: 'ok',
       tabs: [],
