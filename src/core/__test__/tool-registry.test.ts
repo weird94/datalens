@@ -14,19 +14,30 @@ const CHAT_TOOL_NAMES = [
   'runDataCode',
 ]
 
+const DEBUG_TOOL_NAMES = [
+  'debugStartRun',
+  'debugGetLogs',
+  'debugClearLogs',
+  'debugGetRunDiagnostics',
+]
+
 describe('ToolRegistry', () => {
-  it('exposes exactly the chat page tool names', () => {
+  it('exposes chat page tools plus AI diagnostics tools', () => {
     const registry = new ToolRegistry()
 
-    expect(registry.list().map(tool => tool.name)).toEqual(CHAT_TOOL_NAMES)
+    expect(registry.list().map(tool => tool.name)).toEqual([
+      ...CHAT_TOOL_NAMES,
+      ...DEBUG_TOOL_NAMES,
+    ])
   })
 
-  it('does not expose legacy browser, scrape, or debug tools', () => {
+  it('does not expose legacy browser or scrape tools', () => {
     const registry = new ToolRegistry()
 
     expect(registry.get('browser_open_tab')).toBeNull()
     expect(registry.get('scrape_detect_tables')).toBeNull()
     expect(registry.get('debug_get_logs')).toBeNull()
+    expect(registry.get('debugGetLogs')).not.toBeNull()
   })
 
   it('maps openAiWorkspaceTab to the chat bridge command with requestId in payload', () => {
@@ -57,6 +68,63 @@ describe('ToolRegistry', () => {
       },
       requestId: 'req-open',
       timeoutMs: 30_000,
+    })
+  })
+
+  it('passes traceId through chat scraping tools for diagnostics correlation', () => {
+    const registry = new ToolRegistry()
+    const tool = registry.get('detectScrapeTargets')
+    expect(tool).not.toBeNull()
+    if (!tool || !tool.buildCommand) {
+      throw new Error('detectScrapeTargets tool is not available')
+    }
+
+    const args = tool.parseArgs({
+      tabId: 7,
+      prompt: 'Find product cards',
+      traceId: 'trace-1',
+    })
+
+    expect(
+      tool.buildCommand(args, {
+        requestId: 'req-detect',
+        selectedTabId: null,
+        sendCommand: vi.fn(),
+      }).payload
+    ).toEqual({
+      requestId: 'req-detect',
+      traceId: 'trace-1',
+      tabId: 7,
+      prompt: 'Find product cards',
+    })
+  })
+
+  it('maps debug diagnostics tools to bridge commands', () => {
+    const registry = new ToolRegistry()
+    const tool = registry.get('debugGetRunDiagnostics')
+    expect(tool).not.toBeNull()
+    if (!tool || !tool.buildCommand) {
+      throw new Error('debugGetRunDiagnostics tool is not available')
+    }
+
+    const args = tool.parseArgs({
+      traceId: 'trace-1',
+      limit: 50,
+    })
+
+    expect(
+      tool.buildCommand(args, {
+        requestId: 'req-debug',
+        selectedTabId: null,
+        sendCommand: vi.fn(),
+      })
+    ).toEqual({
+      commandName: 'debug.get_run_diagnostics',
+      payload: {
+        traceId: 'trace-1',
+        limit: 50,
+      },
+      requestId: 'req-debug',
     })
   })
 

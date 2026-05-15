@@ -35,6 +35,10 @@ export type BridgeCommandName =
   | 'data_workbench.list_workspace_assets'
   | 'data_workbench.inspect_workspace_asset'
   | 'data_workbench.run_data_code'
+  | 'debug.start_run'
+  | 'debug.get_logs'
+  | 'debug.clear_logs'
+  | 'debug.get_run_diagnostics'
 
 export interface BridgeErrorPayload extends JsonObject {
   code: string

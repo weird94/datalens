@@ -4,8 +4,7 @@ import type { BridgeCommandName, JsonObject } from '../bridge/protocol'
 const JsonObjectSchema = z.record(z.string(), z.unknown())
 const TAB_OPEN_MODE_OPTIONS = ['reuse_or_create', 'create_new'] as const
 const A11Y_TREE_SCOPE_OPTIONS = ['page', 'target'] as const
-const PAGE_OPERATION_OPTIONS = ['scroll', 'click', 'tap'] as const
-const SCROLL_DIRECTION_OPTIONS = ['up', 'down'] as const
+const PAGE_OPERATION_OPTIONS = ['scrollTo', 'click', 'tap'] as const
 const INPUT_TEXT_MODE_OPTIONS = ['replace', 'append'] as const
 const CLICK_WAIT_MODE_OPTIONS = ['none', 'navigation', 'network_idle', 'dom_change'] as const
 const INSPECT_LEVEL_OPTIONS = ['sample', 'quality', 'stats'] as const
@@ -13,11 +12,21 @@ const ASSET_SCOPE_OPTIONS = ['current_thread', 'workspace'] as const
 const DATA_CODE_LANGUAGE_OPTIONS = ['python'] as const
 const DATA_CODE_MODE_OPTIONS = ['preview', 'persist'] as const
 const DATA_CODE_OUTPUT_KIND_OPTIONS = ['cleaned_csv', 'merged_csv', 'analysis_output'] as const
+const DEBUG_LOG_LEVEL_OPTIONS = ['debug', 'info', 'warn', 'error'] as const
+const DEBUG_LOG_SOURCE_OPTIONS = ['background', 'content', 'sidepanel'] as const
 const TERMINAL_SCRAPE_JOB_STATES = ['COMPLETED', 'STOPPED', 'ERROR', 'CANCELED'] as const
 const START_SCRAPE_POLL_INTERVAL_MS = 2_000
 const AI_TOOL_RPC_TIMEOUT_MS = 30_000
 const AI_TOOL_LONG_RPC_TIMEOUT_MS = 120_000
 const URL_PROTOCOL_PATTERN = /^[a-z][a-z\d+\-.]*:/i
+const TRACE_INPUT_SHAPE = {
+  traceId: z
+    .string()
+    .trim()
+    .min(1)
+    .describe('Optional diagnostics trace id returned by debugStartRun.')
+    .optional(),
+} satisfies z.ZodRawShape
 
 export interface SendCommandOptions {
   requestId?: string
@@ -185,6 +194,10 @@ function includeOptionalObject(payload: JsonObject, args: JsonObject, key: strin
   }
 }
 
+function includeOptionalTraceId(payload: JsonObject, args: JsonObject): void {
+  includeOptionalString(payload, args, 'traceId')
+}
+
 function waitForScrapePollInterval(abortSignal: AbortSignal | undefined): Promise<void> {
   return new Promise((resolve, reject) => {
     if (abortSignal?.aborted) {
@@ -279,6 +292,7 @@ function createStartScrapePayload(args: JsonObject, requestId: string): JsonObje
     requestId,
   }
 
+  includeOptionalTraceId(payload, args)
   includeOptionalNumber(payload, args, 'tabId')
   includeOptionalString(payload, args, 'jobId')
   includeOptionalObject(payload, args, 'scrapeConfig')
@@ -301,12 +315,14 @@ function createStartScrapeFinalResponse(requestId: string, job: JsonObject): Jso
 
 async function stopScrapeJob(
   jobId: string,
-  context: ToolCallContext
+  context: ToolCallContext,
+  traceId?: string
 ): Promise<ToolExecutionResult> {
   const stopResponse = await context.sendCommand(
     'ai_tool.stop_scrape',
     {
       requestId: context.requestId,
+      ...(traceId ? { traceId } : {}),
       jobId,
     },
     {
@@ -321,6 +337,13 @@ async function stopScrapeJob(
 
 function validateOperatePageArgs(args: JsonObject): void {
   const operation = readRequiredString(args, 'operation')
+
+  if (operation === 'scrollTo') {
+    if (!args.target) {
+      throw new Error('target is required for scrollTo operation')
+    }
+    return
+  }
 
   if (operation === 'click') {
     if (!args.target) {
@@ -391,6 +414,7 @@ export class ToolRegistry {
         'Open a URL in the dedicated DataLens AI workspace window. Always use this before detecting or scraping a new website.',
       commandName: 'ai_tool.open_workspace_tab',
       inputShape: {
+        ...TRACE_INPUT_SHAPE,
         url: z.string().trim().min(1),
         openMode: z.enum(TAB_OPEN_MODE_OPTIONS).optional(),
       },
@@ -400,6 +424,7 @@ export class ToolRegistry {
           requestId,
           url: normalizeToolUrl(readRequiredString(args, 'url')),
         }
+        includeOptionalTraceId(payload, args)
         includeOptionalString(payload, args, 'openMode')
         return payload
       },
@@ -410,6 +435,7 @@ export class ToolRegistry {
         'Read the accessibility tree for a browser tab or selected scrape target to understand page structure.',
       commandName: 'ai_tool.read_page_a11y_tree',
       inputShape: {
+        ...TRACE_INPUT_SHAPE,
         tabId: z.number().min(1),
         scope: z.enum(A11Y_TREE_SCOPE_OPTIONS).optional(),
         rootSelector: z.string().trim().min(1).optional(),
@@ -423,6 +449,7 @@ export class ToolRegistry {
           requestId,
           tabId: readRequiredNumber(args, 'tabId'),
         }
+        includeOptionalTraceId(payload, args)
         includeOptionalString(payload, args, 'scope')
         includeOptionalString(payload, args, 'rootSelector')
         includeOptionalString(payload, args, 'itemSelector')
@@ -434,20 +461,13 @@ export class ToolRegistry {
     createRequestTool({
       name: 'operatePage',
       description:
-        'Operate on a browser page for setup before scrape detection: click tabs, log in, search, filter, accept dialogs, or position the target list. This is not a collection tool; do not use scroll to load more rows, increase preview size, or satisfy a requested scrape count because startScrape handles scrolling/pagination/loading during collection.',
+        'Operate on a browser page for setup before scrape detection: click tabs, log in, search, filter, accept dialogs, or scrollTo a specific target list. This is not a collection tool; do not use scrollTo to load more rows, increase preview size, or satisfy a requested scrape count because startScrape handles scrolling/pagination/loading during collection.',
       commandName: 'ai_tool.operate_page',
       inputShape: {
+        ...TRACE_INPUT_SHAPE,
         tabId: z.number().min(1),
         operation: z.enum(PAGE_OPERATION_OPTIONS),
         target: ElementTargetSchema.optional(),
-        direction: z.enum(SCROLL_DIRECTION_OPTIONS).optional(),
-        amount: z
-          .number()
-          .min(1)
-          .describe(
-            'Scroll distance in pixels for setup-only page positioning before detection. Do not scroll to load more rows, increase preview size, or satisfy a requested scrape count.'
-          )
-          .optional(),
         waitFor: z.enum(CLICK_WAIT_MODE_OPTIONS).optional(),
         timeoutMs: z.number().min(1).optional(),
         text: z.string().optional(),
@@ -462,12 +482,11 @@ export class ToolRegistry {
           tabId: readRequiredNumber(args, 'tabId'),
           operation,
         }
+        includeOptionalTraceId(payload, args)
         const target = args.target
         if (target !== undefined) {
           payload.target = target
         }
-        includeOptionalString(payload, args, 'direction')
-        includeOptionalNumber(payload, args, 'amount')
         includeOptionalString(payload, args, 'waitFor')
         includeOptionalNumber(payload, args, 'timeoutMs')
         includeOptionalString(payload, args, 'text')
@@ -481,6 +500,7 @@ export class ToolRegistry {
         'Detect repeated scrape targets such as tables, cards, listings, comments, or search results in an existing tab.',
       commandName: 'ai_tool.detect_scrape_targets',
       inputShape: {
+        ...TRACE_INPUT_SHAPE,
         tabId: z.number().min(1),
         prompt: z.string().optional(),
       },
@@ -490,6 +510,7 @@ export class ToolRegistry {
           requestId,
           tabId: readRequiredNumber(args, 'tabId'),
         }
+        includeOptionalTraceId(payload, args)
         includeOptionalString(payload, args, 'prompt')
         return payload
       },
@@ -500,6 +521,7 @@ export class ToolRegistry {
         'Analyze a selected scrape target, expand detected expandable content, infer columns and pagination, and return a complete scrapeConfig plus preview rows. Preview rows validate the configuration only; they are not final collection and do not fulfill requested record counts.',
       commandName: 'ai_tool.analyze_scrape_config',
       inputShape: {
+        ...TRACE_INPUT_SHAPE,
         tabId: z.number().min(1),
         rootSelector: z.string().trim().min(1),
         itemSelector: z.string().trim().min(1),
@@ -516,6 +538,7 @@ export class ToolRegistry {
           itemSelector: readRequiredString(args, 'itemSelector'),
           documentInfoPath: readRequiredString(args, 'documentInfoPath'),
         }
+        includeOptionalTraceId(payload, args)
         includeOptionalString(payload, args, 'prompt')
         includeOptionalNumber(payload, args, 'previewLimit')
         return payload
@@ -527,6 +550,7 @@ export class ToolRegistry {
         'Use this after analyzeScrapeConfig and before startScrape when the user wants fields from each row\'s linked detail page, such as body text, full text, article content, product details, company profiles, job detail pages, 正文, 详情页, 全文, 点开链接, or 每条新闻内容. This updates the latest scrapeConfig with drillDownFields; pass the returned scrapeConfig to startScrape instead of starting the original jobId/config.',
       commandName: 'ai_tool.apply_drill_down_scrape',
       inputShape: {
+        ...TRACE_INPUT_SHAPE,
         tabId: z
           .number()
           .min(1)
@@ -565,6 +589,7 @@ export class ToolRegistry {
           fieldKey: readRequiredString(args, 'fieldKey'),
           prompt: readRequiredString(args, 'prompt'),
         }
+        includeOptionalTraceId(payload, args)
         includeOptionalNumber(payload, args, 'sampleItemIndex')
         return payload
       },
@@ -574,6 +599,7 @@ export class ToolRegistry {
       description:
         'Start the scraper and perform the actual data collection from a prior analysis jobId or a complete latest scrapeConfig. This is the only tool that collects requested records; use maxRecords for requested counts such as 20 items. Results are saved automatically after completion.',
       inputShape: {
+        ...TRACE_INPUT_SHAPE,
         tabId: z
           .number()
           .min(1)
@@ -600,6 +626,7 @@ export class ToolRegistry {
       },
       validateArgs: validateStartScrapeArgs,
       execute: async (args, context) => {
+        const traceId = readOptionalString(args, 'traceId')
         const startResponse = await context.sendCommand(
           'ai_tool.start_scrape',
           createStartScrapePayload(args, context.requestId),
@@ -615,13 +642,14 @@ export class ToolRegistry {
           try {
             await waitForScrapePollInterval(context.abortSignal)
           } catch {
-            return await stopScrapeJob(jobId, context)
+            return await stopScrapeJob(jobId, context, traceId)
           }
 
           const statusResponse = await context.sendCommand(
             'ai_tool.get_scrape_job_status',
             {
               requestId: context.requestId,
+              ...(traceId ? { traceId } : {}),
               jobId,
             },
             {
@@ -642,11 +670,13 @@ export class ToolRegistry {
         'List DataLens data workspace assets. Defaults to current_thread; use scope "workspace" only when the user asks to view all workspace data or a file from another chat/task.',
       commandName: 'data_workbench.list_workspace_assets',
       inputShape: {
+        ...TRACE_INPUT_SHAPE,
         limit: z.number().min(1).max(200).optional(),
         scope: z.enum(ASSET_SCOPE_OPTIONS).optional(),
       },
       payloadBuilder: args => {
         const payload: JsonObject = {}
+        includeOptionalTraceId(payload, args)
         includeOptionalNumber(payload, args, 'limit')
         includeOptionalString(payload, args, 'scope')
         return payload
@@ -658,6 +688,7 @@ export class ToolRegistry {
         'Inspect a workspace CSV file by fileName. Defaults to current_thread scope; use scope "workspace" only for all-workspace or older-task files. Use inspectLevel "sample" for quick checks, "quality" before cleaning, and "stats" before analysis.',
       commandName: 'data_workbench.inspect_workspace_asset',
       inputShape: {
+        ...TRACE_INPUT_SHAPE,
         fileName: z.string().trim().min(1),
         inspectLevel: z.enum(INSPECT_LEVEL_OPTIONS).optional(),
         sampleLimit: z.number().min(1).max(50).optional(),
@@ -667,6 +698,7 @@ export class ToolRegistry {
         const payload: JsonObject = {
           fileName: readRequiredString(args, 'fileName'),
         }
+        includeOptionalTraceId(payload, args)
         includeOptionalString(payload, args, 'inspectLevel')
         includeOptionalNumber(payload, args, 'sampleLimit')
         includeOptionalString(payload, args, 'scope')
@@ -679,6 +711,7 @@ export class ToolRegistry {
         'Run AI-generated Python code against selected workspace CSV files in the DataLens sandbox. Defaults to current_thread scope; use scope "workspace" only for all-workspace or older-task files. Input files are available as /workspace/input/{fileName}. Write preview or final outputs to /workspace/output and include a manifest.json when producing files. Use mode "preview" before ambiguous transformations and mode "persist" when the user wants saved CSV or chart outputs.',
       commandName: 'data_workbench.run_data_code',
       inputShape: {
+        ...TRACE_INPUT_SHAPE,
         fileNames: z.array(z.string().trim().min(1)).min(1).max(10),
         code: z.string().trim().min(1),
         language: z.enum(DATA_CODE_LANGUAGE_OPTIONS),
@@ -694,12 +727,90 @@ export class ToolRegistry {
           code: readRequiredString(args, 'code'),
           language: readRequiredString(args, 'language'),
         }
+        includeOptionalTraceId(payload, args)
         includeOptionalString(payload, args, 'mode')
         includeOptionalString(payload, args, 'outputKind')
         includeOptionalString(payload, args, 'scope')
         includeOptionalNumber(payload, args, 'timeoutMs')
         return payload
       },
+    }),
+    createRequestTool({
+      name: 'debugStartRun',
+      description:
+        'Start an AI diagnostics run. Returns a traceId that can be passed into later tools so logs can be grouped into one run.',
+      commandName: 'debug.start_run',
+      inputShape: {
+        traceId: z.string().trim().min(1).optional(),
+        clearExisting: z.boolean().optional(),
+        note: z.string().trim().min(1).optional(),
+      },
+      payloadBuilder: args => {
+        const payload: JsonObject = {}
+        includeOptionalTraceId(payload, args)
+        const clearExisting = args.clearExisting
+        if (typeof clearExisting === 'boolean') {
+          payload.clearExisting = clearExisting
+        }
+        includeOptionalString(payload, args, 'note')
+        return payload
+      },
+    }),
+    createRequestTool({
+      name: 'debugGetLogs',
+      description:
+        'Query extension debug logs by traceId, requestId, jobId, tabId, source, scope, level, time range, or search text.',
+      commandName: 'debug.get_logs',
+      inputShape: {
+        ...TRACE_INPUT_SHAPE,
+        levels: z.array(z.enum(DEBUG_LOG_LEVEL_OPTIONS)).optional(),
+        sources: z.array(z.enum(DEBUG_LOG_SOURCE_OPTIONS)).optional(),
+        scope: z.string().trim().min(1).optional(),
+        requestId: z.string().trim().min(1).optional(),
+        jobId: z.string().trim().min(1).optional(),
+        tabId: z.number().min(1).optional(),
+        since: z.string().trim().min(1).optional(),
+        until: z.string().trim().min(1).optional(),
+        searchText: z.string().trim().min(1).optional(),
+        limit: z.number().min(1).optional(),
+      },
+      payloadBuilder: args => ({ ...args }),
+    }),
+    createRequestTool({
+      name: 'debugClearLogs',
+      description:
+        'Clear extension debug logs. Prefer passing traceId so unrelated logs are preserved.',
+      commandName: 'debug.clear_logs',
+      inputShape: {
+        ...TRACE_INPUT_SHAPE,
+        levels: z.array(z.enum(DEBUG_LOG_LEVEL_OPTIONS)).optional(),
+        sources: z.array(z.enum(DEBUG_LOG_SOURCE_OPTIONS)).optional(),
+        scope: z.string().trim().min(1).optional(),
+        requestId: z.string().trim().min(1).optional(),
+        jobId: z.string().trim().min(1).optional(),
+        tabId: z.number().min(1).optional(),
+        since: z.string().trim().min(1).optional(),
+        until: z.string().trim().min(1).optional(),
+        searchText: z.string().trim().min(1).optional(),
+      },
+      payloadBuilder: args => ({ ...args }),
+    }),
+    createRequestTool({
+      name: 'debugGetRunDiagnostics',
+      description:
+        'Return a trace-oriented diagnostics bundle with summary, timeline, raw logs, and the first warning/error boundary.',
+      commandName: 'debug.get_run_diagnostics',
+      inputShape: {
+        ...TRACE_INPUT_SHAPE,
+        requestId: z.string().trim().min(1).optional(),
+        jobId: z.string().trim().min(1).optional(),
+        tabId: z.number().min(1).optional(),
+        since: z.string().trim().min(1).optional(),
+        until: z.string().trim().min(1).optional(),
+        searchText: z.string().trim().min(1).optional(),
+        limit: z.number().min(1).optional(),
+      },
+      payloadBuilder: args => ({ ...args }),
     }),
   ]
 
