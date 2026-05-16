@@ -43,6 +43,53 @@ function createJob(state: string, remoteFileId?: string): JsonObject {
 }
 
 describe('ToolExecutor', () => {
+  it('enforces tab leases for readPageRefPug', async () => {
+    const sendCommand = vi.fn<
+      [BridgeCommandName, JsonObject, { requestId?: string; jobId?: string; timeoutMs?: number }?],
+      Promise<JsonObject>
+    >(async commandName => {
+      if (commandName === 'ai_tool.open_workspace_tab') {
+        return {
+          tab: {
+            id: 7,
+            active: true,
+          },
+        }
+      }
+
+      if (commandName === 'ai_tool.read_page_ref_pug') {
+        return {
+          requestId: 'req-ref-pug',
+          tabId: 7,
+          snapshotId: 'snapshot-1',
+          ref: 'ref-1',
+          context: 'node',
+          pug: 'ul\n  li Example',
+          truncated: false,
+        }
+      }
+
+      throw new Error(`Unexpected command: ${commandName}`)
+    })
+    const executor = createExecutor(sendCommand)
+
+    await executor.invoke('openAiWorkspaceTab', { url: 'https://example.com' }, 'session-a')
+
+    await expect(
+      executor.invoke(
+        'readPageRefPug',
+        {
+          tabId: 7,
+          snapshotId: 'snapshot-1',
+          ref: 'ref-1',
+        },
+        'session-b'
+      )
+    ).rejects.toThrow('Tab 7 is already leased by session session-a')
+
+    expect(sendCommand).toHaveBeenCalledTimes(1)
+  })
+
   it('passes current-thread sourceFileIds to data-workbench payloads', async () => {
     vi.useFakeTimers()
 

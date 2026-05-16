@@ -459,6 +459,33 @@ export class ToolRegistry {
       },
     }),
     createRequestTool({
+      name: 'readPageRefPug',
+      description:
+        'Read simplified Pug for a cached a11y-tree ref from readPageA11yTree. Use after detectScrapeTargets returns no targets but the a11y tree shows a plausible repeated list/listitem group; infer rootSelector and itemSelector from the returned Pug, then call analyzeScrapeConfig with documentInfoPath: "".',
+      commandName: 'ai_tool.read_page_ref_pug',
+      inputShape: {
+        ...TRACE_INPUT_SHAPE,
+        tabId: z.number().min(1),
+        snapshotId: z.string().trim().min(1),
+        ref: z.string().trim().min(1),
+        context: z.enum(['node', 'parent']).optional(),
+        maxLength: z.number().min(1).optional(),
+      },
+      timeoutMs: AI_TOOL_RPC_TIMEOUT_MS,
+      payloadBuilder: (args, requestId) => {
+        const payload: JsonObject = {
+          requestId,
+          tabId: readRequiredNumber(args, 'tabId'),
+          snapshotId: readRequiredString(args, 'snapshotId'),
+          ref: readRequiredString(args, 'ref'),
+        }
+        includeOptionalTraceId(payload, args)
+        includeOptionalString(payload, args, 'context')
+        includeOptionalNumber(payload, args, 'maxLength')
+        return payload
+      },
+    }),
+    createRequestTool({
       name: 'operatePage',
       description:
         'Operate on a browser page for setup before scrape detection: click tabs, log in, search, filter, accept dialogs, or scrollTo a specific target list. This is not a collection tool; do not use scrollTo to load more rows, increase preview size, or satisfy a requested scrape count because startScrape handles scrolling/pagination/loading during collection.',

@@ -25,6 +25,7 @@ export interface BridgeEnvelope<TPayload extends JsonObject = JsonObject> {
 export type BridgeCommandName =
   | 'ai_tool.open_workspace_tab'
   | 'ai_tool.read_page_a11y_tree'
+  | 'ai_tool.read_page_ref_pug'
   | 'ai_tool.operate_page'
   | 'ai_tool.detect_scrape_targets'
   | 'ai_tool.analyze_scrape_config'

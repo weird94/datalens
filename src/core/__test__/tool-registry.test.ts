@@ -4,6 +4,7 @@ import { ToolRegistry } from '../tool-registry'
 const CHAT_TOOL_NAMES = [
   'openAiWorkspaceTab',
   'readPageA11yTree',
+  'readPageRefPug',
   'operatePage',
   'detectScrapeTargets',
   'analyzeScrapeConfig',
@@ -67,6 +68,45 @@ describe('ToolRegistry', () => {
         openMode: 'create_new',
       },
       requestId: 'req-open',
+      timeoutMs: 30_000,
+    })
+  })
+
+  it('maps readPageRefPug to the chat bridge command', () => {
+    const registry = new ToolRegistry()
+    const tool = registry.get('readPageRefPug')
+    expect(tool).not.toBeNull()
+    if (!tool || !tool.buildCommand) {
+      throw new Error('readPageRefPug tool is not available')
+    }
+
+    const args = tool.parseArgs({
+      tabId: 7,
+      snapshotId: 'snapshot-1',
+      ref: 'page_e12',
+      context: 'parent',
+      maxLength: 1000,
+      traceId: 'trace-1',
+    })
+
+    expect(
+      tool.buildCommand(args, {
+        requestId: 'req-pug',
+        selectedTabId: null,
+        sendCommand: vi.fn(),
+      })
+    ).toEqual({
+      commandName: 'ai_tool.read_page_ref_pug',
+      payload: {
+        requestId: 'req-pug',
+        traceId: 'trace-1',
+        tabId: 7,
+        snapshotId: 'snapshot-1',
+        ref: 'page_e12',
+        context: 'parent',
+        maxLength: 1000,
+      },
+      requestId: 'req-pug',
       timeoutMs: 30_000,
     })
   })

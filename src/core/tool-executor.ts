@@ -13,6 +13,7 @@ import { ToolRegistry } from './tool-registry'
 const TOOL_NOT_FOUND_ERROR_PREFIX = 'Unknown tool:'
 const TAB_SCOPED_COMMANDS = new Set<BridgeCommandName>([
   'ai_tool.read_page_a11y_tree',
+  'ai_tool.read_page_ref_pug',
   'ai_tool.operate_page',
   'ai_tool.detect_scrape_targets',
   'ai_tool.analyze_scrape_config',
