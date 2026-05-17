@@ -85,7 +85,6 @@ describe('ToolRegistry', () => {
       snapshotId: 'snapshot-1',
       ref: 'page_e12',
       context: 'parent',
-      maxLength: 1000,
       traceId: 'trace-1',
     })
 
@@ -104,7 +103,6 @@ describe('ToolRegistry', () => {
         snapshotId: 'snapshot-1',
         ref: 'page_e12',
         context: 'parent',
-        maxLength: 1000,
       },
       requestId: 'req-pug',
       timeoutMs: 30_000,

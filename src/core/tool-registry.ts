@@ -441,7 +441,6 @@ export class ToolRegistry {
         rootSelector: z.string().trim().min(1).optional(),
         itemSelector: z.string().trim().min(1).optional(),
         documentInfoPath: z.string().optional(),
-        maxLength: z.number().min(1).optional(),
       },
       timeoutMs: AI_TOOL_RPC_TIMEOUT_MS,
       payloadBuilder: (args, requestId) => {
@@ -454,7 +453,6 @@ export class ToolRegistry {
         includeOptionalString(payload, args, 'rootSelector')
         includeOptionalString(payload, args, 'itemSelector')
         includeOptionalString(payload, args, 'documentInfoPath')
-        includeOptionalNumber(payload, args, 'maxLength')
         return payload
       },
     }),
@@ -469,7 +467,6 @@ export class ToolRegistry {
         snapshotId: z.string().trim().min(1),
         ref: z.string().trim().min(1),
         context: z.enum(['node', 'parent']).optional(),
-        maxLength: z.number().min(1).optional(),
       },
       timeoutMs: AI_TOOL_RPC_TIMEOUT_MS,
       payloadBuilder: (args, requestId) => {
@@ -481,7 +478,6 @@ export class ToolRegistry {
         }
         includeOptionalTraceId(payload, args)
         includeOptionalString(payload, args, 'context')
-        includeOptionalNumber(payload, args, 'maxLength')
         return payload
       },
     }),
