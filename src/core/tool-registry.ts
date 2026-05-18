@@ -369,6 +369,18 @@ function validateStartScrapeArgs(args: JsonObject): void {
   }
 }
 
+function validateAnalyzeScrapeConfigArgs(args: JsonObject): void {
+  const hasTableId = readOptionalNumber(args, 'tableId') !== undefined
+  const hasSelectors =
+    readOptionalString(args, 'rootSelector') !== undefined &&
+    readOptionalString(args, 'itemSelector') !== undefined &&
+    readOptionalString(args, 'documentInfoPath') !== undefined
+
+  if (hasTableId === hasSelectors) {
+    throw new Error('Exactly one of tableId or selectors is required')
+  }
+}
+
 function createRequestTool(input: {
   name: string
   description: string
@@ -546,22 +558,25 @@ export class ToolRegistry {
       inputShape: {
         ...TRACE_INPUT_SHAPE,
         tabId: z.number().min(1),
-        rootSelector: z.string().trim().min(1),
-        itemSelector: z.string().trim().min(1),
-        documentInfoPath: z.string(),
+        tableId: z.number().min(1).optional(),
+        rootSelector: z.string().trim().min(1).optional(),
+        itemSelector: z.string().trim().min(1).optional(),
+        documentInfoPath: z.string().optional(),
         prompt: z.string().optional(),
         previewLimit: z.number().min(1).optional(),
       },
+      validateArgs: validateAnalyzeScrapeConfigArgs,
       timeoutMs: AI_TOOL_LONG_RPC_TIMEOUT_MS,
       payloadBuilder: (args, requestId) => {
         const payload: JsonObject = {
           requestId,
           tabId: readRequiredNumber(args, 'tabId'),
-          rootSelector: readRequiredString(args, 'rootSelector'),
-          itemSelector: readRequiredString(args, 'itemSelector'),
-          documentInfoPath: readRequiredString(args, 'documentInfoPath'),
         }
         includeOptionalTraceId(payload, args)
+        includeOptionalNumber(payload, args, 'tableId')
+        includeOptionalString(payload, args, 'rootSelector')
+        includeOptionalString(payload, args, 'itemSelector')
+        includeOptionalString(payload, args, 'documentInfoPath')
         includeOptionalString(payload, args, 'prompt')
         includeOptionalNumber(payload, args, 'previewLimit')
         return payload
