@@ -86,7 +86,7 @@ datalens-mcp-call startScrape '{"jobId":"<jobId>","maxRecords":20}'
 
 ```bash
 datalens-mcp-call listWorkspaceAssets '{}'
-datalens-mcp-call inspectWorkspaceAsset '{"fileName":"rows.csv","inspectLevel":"sample","sampleLimit":20}'
+datalens-mcp-call inspectWorkspaceAsset '{"fileName":"rows.csv","sampleLimit":20}'
 ```
 
 Use `runDataCode` for validation, cleaning, merging, and chart or CSV outputs:

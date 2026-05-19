@@ -7,7 +7,6 @@ const A11Y_TREE_SCOPE_OPTIONS = ['page', 'target'] as const
 const PAGE_OPERATION_OPTIONS = ['scrollTo', 'click', 'tap'] as const
 const INPUT_TEXT_MODE_OPTIONS = ['replace', 'append'] as const
 const CLICK_WAIT_MODE_OPTIONS = ['none', 'navigation', 'network_idle', 'dom_change'] as const
-const INSPECT_LEVEL_OPTIONS = ['sample', 'quality', 'stats'] as const
 const ASSET_SCOPE_OPTIONS = ['current_thread', 'workspace'] as const
 const DATA_CODE_LANGUAGE_OPTIONS = ['python'] as const
 const DATA_CODE_MODE_OPTIONS = ['preview', 'persist'] as const
@@ -723,12 +722,11 @@ export class ToolRegistry {
     createRequestTool({
       name: 'inspectWorkspaceAsset',
       description:
-        'Inspect a workspace CSV file by fileName. Defaults to current_thread scope; use scope "workspace" only for all-workspace or older-task files. Use inspectLevel "sample" for quick checks, "quality" before cleaning, and "stats" before analysis.',
+        'Inspect a workspace CSV file by fileName. Defaults to current_thread scope; use scope "workspace" only for all-workspace or older-task files. Returns sample rows, schema, quality signals, and column statistics in one response.',
       commandName: 'data_workbench.inspect_workspace_asset',
       inputShape: {
         ...TRACE_INPUT_SHAPE,
         fileName: z.string().trim().min(1),
-        inspectLevel: z.enum(INSPECT_LEVEL_OPTIONS).optional(),
         sampleLimit: z.number().min(1).max(50).optional(),
         scope: z.enum(ASSET_SCOPE_OPTIONS).optional(),
       },
@@ -737,7 +735,6 @@ export class ToolRegistry {
           fileName: readRequiredString(args, 'fileName'),
         }
         includeOptionalTraceId(payload, args)
-        includeOptionalString(payload, args, 'inspectLevel')
         includeOptionalNumber(payload, args, 'sampleLimit')
         includeOptionalString(payload, args, 'scope')
         return payload

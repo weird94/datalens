@@ -335,7 +335,6 @@ export async function runOneCase(input: RunOneCaseInput): Promise<RegressionCase
       const inspectedAsset = firstFileName
         ? await input.client.callTool(REGRESSION_MCP_TOOL_NAMES.INSPECT_WORKSPACE_ASSET, {
             fileName: firstFileName,
-            inspectLevel: 'sample',
             sampleLimit: REGRESSION_WORKSPACE_INSPECT_SAMPLE_LIMIT,
           })
         : undefined
