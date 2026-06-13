@@ -22,6 +22,8 @@ const DEBUG_TOOL_NAMES = [
   'debugGetRunDiagnostics',
 ]
 
+const HARNESS_TOOL_NAMES = ['debugLogin', 'collectorList', 'collectorRun', 'collectorAwaitResult']
+
 describe('ToolRegistry', () => {
   it('exposes chat page tools plus AI diagnostics tools', () => {
     const registry = new ToolRegistry()
@@ -29,7 +31,75 @@ describe('ToolRegistry', () => {
     expect(registry.list().map(tool => tool.name)).toEqual([
       ...CHAT_TOOL_NAMES,
       ...DEBUG_TOOL_NAMES,
+      ...HARNESS_TOOL_NAMES,
     ])
+  })
+
+  it('maps collectorRun to the bridge command and requires exactly one collector source', () => {
+    const registry = new ToolRegistry()
+    const tool = registry.get('collectorRun')
+    expect(tool).not.toBeNull()
+    if (!tool || !tool.buildCommand) {
+      throw new Error('collectorRun tool is not available')
+    }
+
+    const args = tool.parseArgs({
+      collectorId: 'col-1',
+      urls: ['https://example.com/list'],
+      limit: 30,
+    })
+
+    expect(
+      tool.buildCommand(args, {
+        requestId: 'req-run',
+        selectedTabId: null,
+        sendCommand: vi.fn(),
+      })
+    ).toEqual({
+      commandName: 'collector.run',
+      payload: {
+        collectorId: 'col-1',
+        urls: ['https://example.com/list'],
+        limit: 30,
+      },
+      requestId: 'req-run',
+      timeoutMs: 300_000,
+    })
+
+    expect(() =>
+      tool.parseArgs({ urls: ['https://example.com/list'] })
+    ).toThrow(/exactly one/)
+    expect(() =>
+      tool.parseArgs({
+        collectorId: 'col-1',
+        collector: { version: 1 },
+        urls: ['https://example.com/list'],
+      })
+    ).toThrow(/exactly one/)
+  })
+
+  it('maps collectorAwaitResult to the bridge command with a generous RPC timeout', () => {
+    const registry = new ToolRegistry()
+    const tool = registry.get('collectorAwaitResult')
+    expect(tool).not.toBeNull()
+    if (!tool || !tool.buildCommand) {
+      throw new Error('collectorAwaitResult tool is not available')
+    }
+
+    const args = tool.parseArgs({ jobId: 'job-1', maxRows: 500 })
+
+    expect(
+      tool.buildCommand(args, {
+        requestId: 'req-await',
+        selectedTabId: null,
+        sendCommand: vi.fn(),
+      })
+    ).toEqual({
+      commandName: 'collector.await_result',
+      payload: { jobId: 'job-1', maxRows: 500 },
+      requestId: 'req-await',
+      timeoutMs: 360_000,
+    })
   })
 
   it('does not expose legacy browser or scrape tools', () => {

@@ -40,6 +40,10 @@ export type BridgeCommandName =
   | 'debug.get_logs'
   | 'debug.clear_logs'
   | 'debug.get_run_diagnostics'
+  | 'debug.login'
+  | 'collector.list'
+  | 'collector.run'
+  | 'collector.await_result'
 
 export interface BridgeErrorPayload extends JsonObject {
   code: string

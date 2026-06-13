@@ -847,6 +847,85 @@ export class ToolRegistry {
       },
       payloadBuilder: args => ({ ...args }),
     }),
+    createRequestTool({
+      name: 'debugLogin',
+      description:
+        'Dev-only e2e harness: inject a Supabase session into the extension (commits auth so guarded commands work). Requires PLASMO_PUBLIC_MCP_DEBUG_COMMANDS=1.',
+      commandName: 'debug.login',
+      inputShape: {
+        accessToken: z.string().trim().min(1),
+        refreshToken: z.string().trim().min(1),
+      },
+      payloadBuilder: args => ({
+        accessToken: readRequiredString(args, 'accessToken'),
+        refreshToken: readRequiredString(args, 'refreshToken'),
+      }),
+    }),
+    createRequestTool({
+      name: 'collectorList',
+      description: 'Dev-only e2e harness: list the signed-in user\'s saved collectors.',
+      commandName: 'collector.list',
+      inputShape: {
+        ...TRACE_INPUT_SHAPE,
+      },
+      payloadBuilder: args => {
+        const payload: JsonObject = {}
+        includeOptionalTraceId(payload, args)
+        return payload
+      },
+    }),
+    createRequestTool({
+      name: 'collectorRun',
+      description:
+        'Dev-only e2e harness: run a collector (by collectorId or inline collector IR) against one or more URLs. Returns started job ids per URL plus any reveal workflow learned. Pair with collectorAwaitResult to read rows.',
+      commandName: 'collector.run',
+      inputShape: {
+        ...TRACE_INPUT_SHAPE,
+        collectorId: z.string().trim().min(1).optional(),
+        collector: JsonObjectSchema.optional(),
+        urls: z.array(z.string().trim().min(1)).min(1),
+        limit: z.number().min(1).optional(),
+        revealWorkflow: z.array(z.unknown()).optional(),
+      },
+      validateArgs: args => {
+        const hasId = typeof args.collectorId === 'string'
+        const hasInline = args.collector !== undefined && args.collector !== null
+        if (hasId === hasInline) {
+          throw new Error('Provide exactly one of collectorId or collector')
+        }
+      },
+      timeoutMs: 300_000,
+      payloadBuilder: args => {
+        const payload: JsonObject = { urls: args.urls }
+        includeOptionalTraceId(payload, args)
+        includeOptionalString(payload, args, 'collectorId')
+        includeOptionalObject(payload, args, 'collector')
+        includeOptionalNumber(payload, args, 'limit')
+        if (Array.isArray(args.revealWorkflow)) {
+          payload.revealWorkflow = args.revealWorkflow
+        }
+        return payload
+      },
+    }),
+    createRequestTool({
+      name: 'collectorAwaitResult',
+      description:
+        'Dev-only e2e harness: wait for a collector job to reach a terminal state and return rows, drill-down list counts, consumed points, and any error.',
+      commandName: 'collector.await_result',
+      inputShape: {
+        jobId: z.string().trim().min(1),
+        timeoutMs: z.number().min(1).max(300_000).optional(),
+        maxRows: z.number().min(1).max(10_000).optional(),
+      },
+      // Above the tool's internal 5-min await default so the RPC doesn't time out first.
+      timeoutMs: 360_000,
+      payloadBuilder: args => {
+        const payload: JsonObject = { jobId: readRequiredString(args, 'jobId') }
+        includeOptionalNumber(payload, args, 'timeoutMs')
+        includeOptionalNumber(payload, args, 'maxRows')
+        return payload
+      },
+    }),
   ]
 
   list(): ToolDefinition[] {
