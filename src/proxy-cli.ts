@@ -24,9 +24,14 @@ function isCompiledMode(): boolean {
   return currentFilePath.endsWith('.js')
 }
 
-function getRepoRoot(): string {
+/**
+ * Root of THIS package, which is where the daemon has to be spawned from in source mode: `tsx` is a
+ * devDependency of the package, not of the workspace root. Pointing pnpm at the repo root instead
+ * fails with `Command "tsx" not found`.
+ */
+function getPackageRoot(): string {
   const currentFilePath = fileURLToPath(import.meta.url)
-  return path.resolve(path.dirname(currentFilePath), '../../..')
+  return path.resolve(path.dirname(currentFilePath), '..')
 }
 
 function getDaemonCliPath(): string {
@@ -45,12 +50,31 @@ function spawnDaemonProcess(): { unref: () => void } {
   const daemonPath = getDaemonCliPath()
   const [cmd, args] = isCompiledMode()
     ? ['node', [daemonPath]]
-    : [getPnpmCommand(), ['--dir', getRepoRoot(), 'exec', 'tsx', daemonPath]]
+    : [getPnpmCommand(), ['--dir', getPackageRoot(), 'exec', 'tsx', daemonPath]]
 
   const child = spawn(cmd, args, {
     detached: true,
     stdio: 'ignore',
     env: process.env,
+  })
+
+  // Without these, a daemon that fails to launch is completely silent and the only symptom is
+  // DaemonLauncher's "Daemon did not become healthy within 15000ms" fifteen seconds later, which
+  // points at the daemon rather than at the spawn that never happened.
+  child.on('error', error => {
+    logger.error('Failed to spawn daemon process', {
+      command: `${cmd} ${args.join(' ')}`,
+      error: error.message,
+    })
+  })
+  child.on('exit', (code, signal) => {
+    if (code !== null && code !== 0) {
+      logger.error('Daemon process exited before becoming healthy', {
+        command: `${cmd} ${args.join(' ')}`,
+        exitCode: code,
+        ...(signal ? { signal } : {}),
+      })
+    }
   })
 
   return child
