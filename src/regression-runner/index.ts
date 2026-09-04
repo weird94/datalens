@@ -11,7 +11,12 @@ import { RegressionMcpClient } from './mcp-client'
 import { PlaywrightRegressionPreDetectService } from './playwright-pre-detect'
 import { runBatch } from './run-batch'
 import { runOneCase } from './run-one'
-import type { RegressionCaseRow, RegressionManifest } from './types'
+import type {
+  RegressionCaseRow,
+  RegressionJsonObject,
+  RegressionManifest,
+  RegressionManifestCaseEntry,
+} from './types'
 import type { RegressionPriorityValue } from './cases'
 
 const REGRESSION_RUNNER_MODES = {
@@ -139,6 +144,43 @@ function findCaseByNumber(rows: RegressionCaseRow[], rowNumber: number): Regress
   return matched
 }
 
+/**
+ * 「实收 / 请求」的汇总。分页控件挑错时不会报错，只会让这个比值塌掉，
+ * 所以批量跑完先看这里：lowYieldCases 就是下一轮该查的案子。
+ */
+const LOW_YIELD_RATIO_THRESHOLD = 0.5
+
+function summarizeYield(entries: RegressionManifestCaseEntry[]): RegressionJsonObject {
+  const measured = entries.filter(
+    (entry): entry is RegressionManifestCaseEntry & { yieldRatio: number } =>
+      typeof entry.yieldRatio === 'number'
+  )
+
+  if (measured.length === 0) {
+    return { measuredCases: 0 }
+  }
+
+  const totalRatio = measured.reduce((sum, entry) => sum + entry.yieldRatio, 0)
+  const lowYieldCases = measured
+    .filter(entry => entry.yieldRatio < LOW_YIELD_RATIO_THRESHOLD)
+    .map(entry => ({
+      rowIndex: entry.rowIndex,
+      caseDirName: entry.caseDirName,
+      yieldRatio: entry.yieldRatio,
+      ...(typeof entry.collectedRows === 'number' ? { collectedRows: entry.collectedRows } : {}),
+      ...(typeof entry.requestedMaxRecords === 'number'
+        ? { requestedMaxRecords: entry.requestedMaxRecords }
+        : {}),
+    }))
+
+  return {
+    measuredCases: measured.length,
+    averageYieldRatio: Number((totalRatio / measured.length).toFixed(3)),
+    lowYieldThreshold: LOW_YIELD_RATIO_THRESHOLD,
+    lowYieldCases,
+  }
+}
+
 async function main(): Promise<void> {
   const args = parseCliArgs(process.argv.slice(2))
   const rows = await loadCases(args.csvPath)
@@ -223,6 +265,7 @@ async function main(): Promise<void> {
       {
         mode: args.mode,
         outputDateDir,
+        yieldSummary: summarizeYield(entries),
         cases: entries,
       },
       null,

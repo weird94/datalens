@@ -163,6 +163,28 @@ function readStartResult(value: RegressionJsonValue): RegressionScrapeStartResul
   }
 }
 
+/**
+ * 本次实际采到多少行。
+ *
+ * 配合 `requestedMaxRecords` 得到「实收 / 请求」——判断分页选择得好不好的北极星指标：
+ * 挑错分页控件时这个比值会塌掉（头条信息流实测 7/200），而不是像报错那样有明显信号。
+ */
+function readCollectedRowCount(job: RegressionJsonValue | undefined): number | undefined {
+  if (job === undefined) {
+    return undefined
+  }
+
+  const progress = readObject(job, 'scrape job').progress
+  if (progress === undefined) {
+    return undefined
+  }
+
+  const progressObject = readObject(progress, 'scrape job progress')
+  const mainCount = progressObject.mainCount
+
+  return typeof mainCount === 'number' && Number.isFinite(mainCount) ? mainCount : undefined
+}
+
 function readFirstWorkspaceFileName(value: RegressionJsonValue): string | undefined {
   const objectValue = readObject(value, 'workspace assets response')
   const filesValue = objectValue.files
@@ -364,6 +386,12 @@ export async function runOneCase(input: RunOneCaseInput): Promise<RegressionCase
     }
   }
 
+  const collectedRows = readCollectedRowCount(lastStatus?.job)
+  const yieldRatio =
+    collectedRows === undefined || input.maxRecords <= 0
+      ? undefined
+      : Number((collectedRows / input.maxRecords).toFixed(3))
+
   const caseRecord: RegressionJsonObject = {
     rowIndex: input.testCase.rowIndex,
     environment: input.testCase.environment,
@@ -373,6 +401,9 @@ export async function runOneCase(input: RunOneCaseInput): Promise<RegressionCase
     url: input.testCase.url,
     prompt: input.testCase.scrapePrompt,
     runnerState,
+    requestedMaxRecords: input.maxRecords,
+    ...(collectedRows !== undefined ? { collectedRows } : {}),
+    ...(yieldRatio !== undefined ? { yieldRatio } : {}),
     ...(jobId ? { jobId } : {}),
     ...(jobState ? { jobState } : {}),
     ...(errorMessage ? { errorMessage } : {}),
@@ -393,6 +424,9 @@ export async function runOneCase(input: RunOneCaseInput): Promise<RegressionCase
       rowIndex: input.testCase.rowIndex,
       caseDirName,
       runnerState,
+      requestedMaxRecords: input.maxRecords,
+      ...(collectedRows !== undefined ? { collectedRows } : {}),
+      ...(yieldRatio !== undefined ? { yieldRatio } : {}),
       ...(jobState ? { jobState } : {}),
       ...(errorMessage ? { errorMessage } : {}),
       ...(jobId ? { jobId } : {}),
