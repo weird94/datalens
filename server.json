@@ -1,0 +1,22 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.weird94/datalens-mcp-server",
+  "title": "DataLens",
+  "description": "Turn any web page into structured rows through your own browser: detect the list on a page, pick columns, run the scrape, and read the result back as a table.",
+  "repository": {
+    "url": "https://github.com/weird94/datalens",
+    "source": "github"
+  },
+  "version": "0.1.1",
+  "websiteUrl": "https://datalens.uk",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "datalens-mcp-server",
+      "version": "0.1.1",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

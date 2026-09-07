@@ -24,6 +24,19 @@ const REGRESSION_RUNNER_MODES = {
   ONE: 'one',
 } as const
 
+/**
+ * 预检测（滚动+截图）走 playwright-mcp。它在部分机器上必超时，而首采验证并不需要它——
+ * `runOneCase` 的 preDetectService 本来就是可选的。所以默认 none：不构造那个 service，
+ * 直接把 URL 交给扩展自己开页检测。要跑带预检测的老流程用 `--pre-detect playwright`。
+ */
+const REGRESSION_PRE_DETECT_VALUES = {
+  NONE: 'none',
+  PLAYWRIGHT: 'playwright',
+} as const
+
+type RegressionPreDetectValue =
+  (typeof REGRESSION_PRE_DETECT_VALUES)[keyof typeof REGRESSION_PRE_DETECT_VALUES]
+
 const REGRESSION_DEFAULT_MAX_RECORDS = 100
 const REGRESSION_DEFAULT_TIMEOUT_MS = 10 * 60_000
 const REGRESSION_DEFAULT_WAIT_MS = 5_000
@@ -42,6 +55,7 @@ interface ParsedCliArgs {
   timeoutMs: number
   waitMs: number
   batchPriority: RegressionPriorityValue
+  preDetect: RegressionPreDetectValue
 }
 
 function parsePositiveInteger(raw: string | undefined, label: string): number {
@@ -72,6 +86,18 @@ function parseBatchPriority(raw: string | undefined): RegressionPriorityValue {
   }
 
   throw new Error('--priority must be one of p0, p1, p2')
+}
+
+function parsePreDetect(raw: string | undefined): RegressionPreDetectValue {
+  if (raw === undefined || raw === REGRESSION_PRE_DETECT_VALUES.NONE) {
+    return REGRESSION_PRE_DETECT_VALUES.NONE
+  }
+
+  if (raw === REGRESSION_PRE_DETECT_VALUES.PLAYWRIGHT) {
+    return REGRESSION_PRE_DETECT_VALUES.PLAYWRIGHT
+  }
+
+  throw new Error('--pre-detect must be one of none, playwright')
 }
 
 function getTodayDateKey(): string {
@@ -111,6 +137,7 @@ function parseCliArgs(argv: string[]): ParsedCliArgs {
     ? parsePositiveInteger(getFlagValue(argv, '--row'), '--row')
     : undefined
   const batchPriority = parseBatchPriority(getFlagValue(argv, '--priority'))
+  const preDetect = parsePreDetect(getFlagValue(argv, '--pre-detect'))
 
   if (mode === REGRESSION_RUNNER_MODES.ONE && rowNumber === undefined) {
     throw new Error('--row is required in one mode')
@@ -127,6 +154,7 @@ function parseCliArgs(argv: string[]): ParsedCliArgs {
     timeoutMs,
     waitMs,
     batchPriority,
+    preDetect,
   }
 }
 
@@ -185,7 +213,10 @@ async function main(): Promise<void> {
   const args = parseCliArgs(process.argv.slice(2))
   const rows = await loadCases(args.csvPath)
   const outputDateDir = buildDateOutputDir(args.outputRoot, args.dateKey)
-  const preDetectService = new PlaywrightRegressionPreDetectService()
+  const preDetectService =
+    args.preDetect === REGRESSION_PRE_DETECT_VALUES.PLAYWRIGHT
+      ? new PlaywrightRegressionPreDetectService()
+      : undefined
 
   async function runCaseWithFreshClient(testCase: RegressionCaseRow) {
     const client = new RegressionMcpClient()
@@ -200,7 +231,7 @@ async function main(): Promise<void> {
         maxRecords: args.maxRecords,
         timeoutMs: args.timeoutMs,
         waitMs: args.waitMs,
-        preDetectService,
+        ...(preDetectService ? { preDetectService } : {}),
       })
     } finally {
       await client.close()
